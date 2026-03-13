@@ -11,7 +11,6 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pathlib import Path
 
 from backend.routers import (
@@ -61,9 +60,5 @@ def health():
 # ── Serve React frontend (production build) ───────────────────────────────────
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
-
-    @app.get("/{full_path:path}")
-    def serve_frontend(full_path: str):
-        index = frontend_dist / "index.html"
-        return FileResponse(str(index))
+    # html=True : sert index.html pour toutes les routes inconnues (SPA fallback)
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
