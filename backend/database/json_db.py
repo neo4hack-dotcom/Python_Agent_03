@@ -35,7 +35,9 @@ def _write(collection: str, data: Dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-    tmp.replace(path)
+    # os.replace est atomique sur Windows et Linux (contrairement à Path.replace
+    # qui peut lever PermissionError sur Windows si le fichier cible est verrouillé)
+    os.replace(str(tmp), str(path))
 
 
 class JsonDB:

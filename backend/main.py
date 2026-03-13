@@ -1,8 +1,14 @@
 """
 Main FastAPI application entry point.
 """
+import sys
+import asyncio
 import logging
 from fastapi import FastAPI
+
+# Windows: forcer le SelectorEventLoop (compatible avec uvicorn + websockets)
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse

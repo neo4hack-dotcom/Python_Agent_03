@@ -10,13 +10,13 @@ Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, perm
 - [Architecture](#-architecture)
 - [Stack technique](#-stack-technique)
 - [Prérequis](#-prérequis)
-- [Installation & Démarrage](#-installation--démarrage)
+- [Installation Windows](#-installation-windows-recommandé)
+- [Installation Linux / macOS](#-installation--démarrage-linux--macos)
 - [Configuration LLM](#-configuration-llm)
 - [Agents disponibles](#-agents-disponibles)
 - [Sécurité SQL (Guardrails)](#-sécurité-sql-guardrails)
 - [API REST](#-api-rest)
 - [Structure du projet](#-structure-du-projet)
-- [Captures d'écran](#-captures-décran)
 
 ---
 
@@ -152,14 +152,90 @@ START
 
 ## 📦 Prérequis
 
-- **Python** 3.11+
-- **Node.js** 18+ et npm
-- Un **LLM local** accessible via HTTP (voir [Configuration LLM](#-configuration-llm))
-- *(Optionnel)* Un serveur **ClickHouse** ou **Oracle** pour les agents analystes
+| Outil | Version minimale | Lien |
+|-------|-----------------|------|
+| **Python** | 3.11+ | [python.org](https://www.python.org/downloads/) — ✅ cocher *"Add to PATH"* |
+| **Node.js** | 18 LTS+ | [nodejs.org](https://nodejs.org/) |
+| **LLM local** | — | [Ollama](https://ollama.ai) / [LM Studio](https://lmstudio.ai) |
+| *(Optionnel)* ClickHouse | — | Pour les agents analystes |
+| *(Optionnel)* Oracle | — | Pour les agents analystes |
 
 ---
 
-## 🚀 Installation & Démarrage
+## 🪟 Installation Windows (recommandé)
+
+> Tous les scripts sont des fichiers `.bat` — aucun outil supplémentaire requis.
+
+### Étape 1 — Cloner le dépôt
+
+```cmd
+git clone https://github.com/neo4hack-dotcom/Python_Agent_03.git
+cd Python_Agent_03
+```
+
+### Étape 2 — Installation complète (une seule fois)
+
+Double-cliquez sur **`install.bat`** ou depuis CMD :
+
+```cmd
+install.bat
+```
+
+Ce script effectue automatiquement :
+1. ✅ Détection de Python (`python` / `py`)
+2. ✅ Création d'un environnement virtuel `.venv`
+3. ✅ `pip install -r requirements.txt`
+4. ✅ Détection de Node.js / npm
+5. ✅ `npm install` dans `frontend/`
+6. ✅ `npm run build` (compile le frontend React)
+7. ✅ Création de raccourcis sur le **bureau Windows**
+
+### Étape 3 — Lancer l'application
+
+**Option A — Raccourci bureau** (créé par install.bat) :
+- Double-cliquez sur 🖥️ **`Agent Platform`** sur votre bureau
+
+**Option B — Depuis CMD** :
+```cmd
+launch.bat
+```
+
+Le navigateur s'ouvre automatiquement sur **http://localhost:8000**
+
+---
+
+### Scripts Windows disponibles
+
+| Fichier | Rôle | Usage |
+|---------|------|-------|
+| `install.bat` | Installation complète + raccourci bureau | Une seule fois |
+| `launch.bat` | Lancement production (serveur + navigateur) | Utilisation quotidienne |
+| `launch_dev.bat` | Mode dev — 2 fenêtres séparées (hot reload) | Développement |
+| `stop.bat` | Arrêter tous les serveurs de l'app | Arrêt propre |
+| `create_shortcut.vbs` | Recrée les raccourcis bureau | Si raccourcis perdus |
+
+### Récréer les raccourcis manuellement
+
+```cmd
+cscript create_shortcut.vbs
+```
+
+---
+
+### Résolution de problèmes Windows
+
+| Problème | Solution |
+|----------|----------|
+| `'python' n'est pas reconnu` | Réinstaller Python en cochant **"Add to PATH"** |
+| `'node' n'est pas reconnu` | Réinstaller Node.js LTS depuis nodejs.org |
+| Port 8000 déjà utilisé | Lancer `stop.bat` puis `launch.bat` |
+| Erreur `EACCES` / antivirus | Ajouter le dossier du projet aux exclusions antivirus |
+| Fenêtre CMD qui se ferme | Lancer `launch.bat` depuis CMD, pas en double-clic |
+| `venv` introuvable | Relancer `install.bat` |
+
+---
+
+## 🐧 Installation & Démarrage Linux / macOS
 
 ### 1. Cloner le dépôt
 
@@ -188,16 +264,12 @@ bash start.sh
 ### Installation manuelle
 
 ```bash
-# Backend
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# Frontend
-cd frontend
-npm install
-npm run build
-cd ..
+cd frontend && npm install && npm run build && cd ..
 
-# Démarrer
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
