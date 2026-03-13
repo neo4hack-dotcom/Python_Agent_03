@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { X, Save, Plug } from 'lucide-react'
+import { X, Save, Plug, AlertTriangle } from 'lucide-react'
 import { connectionsApi } from '../services/api'
 
 const DEFAULTS = {
@@ -25,6 +25,11 @@ export default function ConnectionModal({ connection, onClose, onSaved }) {
   const [testResult, setTestResult] = useState(null)
   const [error, setError] = useState('')
 
+  const busy = testing || saving
+
+  // Détecter si l'hôte contient un préfixe http(s):// (erreur courante)
+  const hostHasProtocol = /^https?:\/\//i.test(form.host.trim())
+
   const handleTypeChange = (type) => {
     const def = DEFAULTS[type] || {}
     setForm((f) => ({ ...f, type, port: def.port || f.port, database: def.database || f.database, username: def.username || f.username }))
@@ -33,13 +38,17 @@ export default function ConnectionModal({ connection, onClose, onSaved }) {
   const handleTest = async () => {
     setTesting(true)
     setTestResult(null)
+    setError('')
+    // Pour une nouvelle connexion : créer temporairement, tester, puis supprimer.
+    // Évite de polluer la liste avec des connexions non sauvegardées.
+    let tempId = null
     try {
-      // Save first to test
       const payload = { ...form }
       let id = connection?.id
       if (!id) {
         const r = await connectionsApi.create(payload)
-        id = r.data.id
+        tempId = r.data.id
+        id = tempId
       } else {
         await connectionsApi.update(id, payload)
       }
@@ -48,6 +57,10 @@ export default function ConnectionModal({ connection, onClose, onSaved }) {
     } catch (e) {
       setTestResult({ success: false, error: e.response?.data?.detail || e.message })
     } finally {
+      // Supprimer la connexion temporaire créée juste pour le test
+      if (tempId) {
+        connectionsApi.delete(tempId).catch(() => {})
+      }
       setTesting(false)
     }
   }
@@ -72,14 +85,15 @@ export default function ConnectionModal({ connection, onClose, onSaved }) {
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    // Ne pas fermer la modal si une opération est en cours
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
       <div className="modal">
         <div className="modal-header">
           <div className="flex items-center gap-2">
             <Plug size={18} />
             <h3>{isEdit ? `Modifier : ${connection.name}` : 'Nouvelle connexion'}</h3>
           </div>
-          <button className="btn btn-icon btn-secondary" onClick={onClose}>
+          <button className="btn btn-icon btn-secondary" onClick={onClose} disabled={busy}>
             <X size={16} />
           </button>
         </div>
@@ -122,7 +136,26 @@ export default function ConnectionModal({ connection, onClose, onSaved }) {
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">Hôte *</label>
-              <input className="input" value={form.host} onChange={(e) => setForm(f => ({ ...f, host: e.target.value }))} placeholder="localhost / 192.168.1.x" />
+              <input
+                className="input"
+                value={form.host}
+                onChange={(e) => setForm(f => ({ ...f, host: e.target.value }))}
+                placeholder="localhost  ou  192.168.1.x"
+                style={hostHasProtocol ? { borderColor: 'var(--warning)' } : {}}
+              />
+              {hostHasProtocol && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, fontSize: 12, color: 'var(--warning)' }}>
+                  <AlertTriangle size={12} />
+                  Saisissez uniquement le nom d'hôte, sans "http://"
+                  <button
+                    type="button"
+                    style={{ marginLeft: 4, fontSize: 11, color: 'var(--accent-light)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                    onClick={() => setForm(f => ({ ...f, host: f.host.replace(/^https?:\/\//i, '').split('/')[0] }))}
+                  >
+                    Corriger automatiquement
+                  </button>
+                </div>
+              )}
             </div>
             <div className="form-group">
               <label className="form-label">Port</label>
@@ -165,12 +198,12 @@ export default function ConnectionModal({ connection, onClose, onSaved }) {
         </div>
 
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={handleTest} disabled={testing || saving}>
+          <button className="btn btn-secondary" onClick={handleTest} disabled={busy}>
             {testing ? <div className="spinner" /> : null}
             Tester
           </button>
-          <button className="btn btn-secondary" onClick={onClose}>Annuler</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>Annuler</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
             {saving ? <div className="spinner" /> : <Save size={15} />}
             {isEdit ? 'Sauvegarder' : 'Créer'}
           </button>

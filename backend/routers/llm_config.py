@@ -26,10 +26,18 @@ def update_llm_config(config: LLMConfig):
 @router.post("/test")
 async def test_llm_connection(config: LLMConfig):
     """Probe the LLM endpoint to verify connectivity."""
+    base = config.base_url.rstrip("/")
+
+    # Normalisation automatique pour Ollama : ajouter /v1 si absent
+    if not base.endswith("/v1") and (
+        ":11434" in base or config.provider.value == "ollama"
+    ):
+        base = base + "/v1"
+
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                f"{config.base_url.rstrip('/')}/chat/completions",
+                f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {config.api_key}"},
                 json={
                     "model": config.model,
@@ -38,10 +46,10 @@ async def test_llm_connection(config: LLMConfig):
                 },
             )
             if resp.status_code == 200:
-                return {"success": True, "status_code": resp.status_code}
+                return {"success": True, "status_code": resp.status_code, "endpoint": base}
             return {"success": False, "status_code": resp.status_code, "detail": resp.text[:500]}
     except httpx.ConnectError as e:
-        return {"success": False, "error": f"Connection refused: {e}"}
+        return {"success": False, "error": f"Connexion refusée — vérifiez qu'Ollama/LM Studio est démarré. ({e})"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
