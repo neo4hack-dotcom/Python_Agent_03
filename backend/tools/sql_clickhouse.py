@@ -93,12 +93,16 @@ class ClickHouseSQLTool:
             try:
                 import clickhouse_connect
 
-                # Normaliser l'hôte : supprimer le préfixe http(s):// si présent
                 host = self.cfg["host"].strip()
+
+                # Extraire le protocole (http vs https) pour le paramètre secure
+                secure = False
                 for prefix in ("https://", "http://"):
                     if host.lower().startswith(prefix):
+                        secure = prefix == "https://"
                         host = host[len(prefix):]
                         break
+
                 # Extraire le port intégré dans l'hôte (ex: "localhost:8123")
                 port = int(self.cfg.get("port", 8123))
                 if ":" in host:
@@ -106,12 +110,14 @@ class ClickHouseSQLTool:
                     if parts[1].isdigit():
                         host = parts[0]
                         port = int(parts[1])
+
                 # Supprimer le chemin éventuel (ex: "localhost:8123/mydb")
                 host = host.split("/")[0]
 
                 self._client = clickhouse_connect.get_client(
                     host=host,
                     port=port,
+                    secure=secure,
                     username=self.cfg.get("username", "default"),
                     password=self.cfg.get("password", ""),
                     database=self.cfg.get("database", "default"),
