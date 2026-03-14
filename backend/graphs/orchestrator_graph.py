@@ -1,12 +1,52 @@
 """
-Orchestrator LangGraph — multi-agent workflow with:
-  - Planning & decomposition
-  - Dynamic routing to worker agents
-  - Fan-out / Fan-in parallelism (via Send API)
-  - State management with retry loop
-  - Human-in-the-loop interruption
-  - Synthesis & validation
-  - Real analyst sub-pipeline delegation (no placeholders)
+Graphe LangGraph Orchestrateur (orchestrator_graph.py)
+=======================================================
+Workflow multi-agents capable de décomposer une requête complexe en sous-tâches,
+d'en déléguer l'exécution à des agents spécialistes (ClickHouse, Oracle…) et de
+synthétiser les résultats en une réponse finale cohérente.
+
+Architecture du graphe :
+------------------------
+                         ┌──────────────┐
+                   START ─► planner_node  │  ← décompose la requête en sous-tâches
+                         └──────┬───────┘
+                                │
+                    ┌───────────▼──────────┐
+                    │ task_dispatcher_node  │  ← choisit la prochaine tâche
+                    └───────────┬──────────┘
+                                │
+            ┌───────────────────┼────────────────────┐
+            │ human approval    │ tâche dispo          │ plus de tâche / limite iter.
+     ┌──────▼──────┐    ┌──────▼──────┐       ┌──────▼──────┐
+     │human_feedback│    │ worker_node │       │synthesizer  │
+     │    _node    │    └──────┬──────┘       │    _node    │
+     └──────┬──────┘           │               └──────┬──────┘
+            │           ┌──────┴──────┐               │
+            └──────────►│   succès ?  │               │
+                        └──────┬──────┘               │
+                 ┌─────────────┼──────────────┐        │
+          erreur │       toutes│ tâches        │succès  │
+         + retry │       faites│               │        │
+        ┌────────▼──────┐     └───────────────┘        │
+        │corrector_node │                               │
+        └────────┬──────┘                               │
+                 └─────── (retour à worker_node)        │
+                                                        │
+                                             END ◄──────┘
+
+Délégation réelle aux agents analystes :
+  Quand une tâche a `agent_type = "clickhouse_analyst"` ou `"oracle_analyst"`,
+  `worker_node` NE délègue PAS à un LLM générique. Il appelle directement le
+  sous-pipeline analyst : analyst_node → sql_tool_node → synthesizer_node.
+  Cela garantit l'exécution de vraies requêtes SQL et des résultats réels
+  (sans placeholders ni données inventées).
+
+Human-in-the-loop :
+  Si une tâche porte `requires_human_approval: true`, le graphe s'interrompt
+  sur `human_feedback_node` (via `interrupt_before` à la compilation).
+  L'API peut alors renvoyer l'état courant au frontend, attendre la validation
+  de l'utilisateur, puis reprendre l'exécution depuis ce point de contrôle
+  (via le checkpointer LangGraph).
 """
 import json
 import logging
@@ -18,6 +58,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import OrchestratorState
 from .llm_factory import build_llm
+# Import des nœuds individuels du graphe analyste pour appel direct
+# (sans passer par le graphe compilé, afin de contrôler le retry loop ici)
 from .analyst_graph import analyst_node, sql_tool_node, synthesizer_node as analyst_synthesizer_node
 from backend.database import db, COLL_AGENTS, COLL_CONNECTIONS
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
@@ -26,6 +68,8 @@ from backend.tools.sql_oracle import OracleSQLTool
 logger = logging.getLogger(__name__)
 
 # ── System Prompts ────────────────────────────────────────────────────────────
+# Les prompts définissent le comportement de chaque nœud LLM.
+# Ils sont tous injectés en tant que SystemMessage (premier message du contexte).
 
 PLANNER_SYSTEM = """You are an expert orchestrator agent. Your job is to:
 1. Understand the user's overall objective.
@@ -58,6 +102,9 @@ Respond ONLY with a JSON object in this exact format:
   ]
 }}
 """
+# Note : `{agents_block}` est remplacé dynamiquement par `planner_node` avec la
+# liste des agents analystes actifs (nom, type, id) lus depuis la base de données.
+# Cela permet au LLM de connaître les agents disponibles au moment de la planification.
 
 ROUTER_SYSTEM = """You are a routing agent. Given the current task and available worker results,
 decide the next action:
@@ -69,6 +116,9 @@ decide the next action:
 
 Respond ONLY with JSON: {"action": "<action>", "reason": "<brief reason>"}
 """
+# Note : ROUTER_SYSTEM est défini mais non utilisé dans les nœuds actuels.
+# Le routage est effectué directement par les fonctions Python `route_after_*`
+# qui inspectent l'état, ce qui est plus déterministe et plus rapide qu'un LLM.
 
 SYNTHESIZER_SYSTEM = """You are a synthesis expert. Compile all worker results into a coherent,
 structured final answer for the user. Be comprehensive but concise.
@@ -76,16 +126,33 @@ Format your answer in Markdown with clear sections.
 
 IMPORTANT: The worker results contain REAL data fetched from databases. Present this real data
 accurately — do NOT replace data with placeholders or templates."""
+# La mention "REAL data" est critique : sans elle, certains LLMs tendent à
+# réécrire les données tabulaires avec des valeurs génériques.
 
 CORRECTOR_SYSTEM = """You are a correction specialist. A sub-task failed.
 Analyze the error and provide an improved, corrected version of the task instructions
 that will help the worker agent succeed on the next attempt."""
 
 
-# ── Analyst delegation helpers ────────────────────────────────────────────────
+# ── Helpers : délégation aux agents analystes ─────────────────────────────────
 
 def _find_analyst_agent(agent_type: str, agent_id_hint: Optional[str] = None) -> Optional[str]:
-    """Return the id of the best matching active analyst agent."""
+    """
+    Trouve l'ID du meilleur agent analyste actif correspondant au type demandé.
+
+    Stratégie de résolution (priorité décroissante) :
+      1. Si `agent_id_hint` est fourni (par le planner), vérifie que cet agent
+         existe, qu'il a le bon type et qu'il est actif → le retourne.
+      2. Sinon, parcourt tous les agents pour trouver le premier actif du bon type.
+      3. Si aucun agent n'est trouvé, retourne None (le worker affichera une erreur).
+
+    Args:
+        agent_type: "clickhouse_analyst" ou "oracle_analyst".
+        agent_id_hint: ID suggéré par le planner (peut être None ou invalide).
+
+    Returns:
+        ID de l'agent à utiliser, ou None si aucun agent actif n'est trouvé.
+    """
     if agent_id_hint:
         a = db.get(COLL_AGENTS, agent_id_hint)
         if a and a.get("type") == agent_type and a.get("is_active", True):
@@ -97,7 +164,20 @@ def _find_analyst_agent(agent_type: str, agent_id_hint: Optional[str] = None) ->
 
 
 def _get_sql_tool_for_agent(agent_id: str) -> Optional[Any]:
-    """Build the SQL tool for a given agent."""
+    """
+    Instancie l'outil SQL (ClickHouse ou Oracle) pour un agent donné.
+
+    Utilisé uniquement par `_auto_schema_context()` pour récupérer le schéma
+    de la base avant de lancer le sous-pipeline analyste.
+
+    Chaîne de résolution :
+      COLL_AGENTS[agent_id] → connection_id
+      → COLL_CONNECTIONS[connection_id] → type + credentials
+      → ClickHouseSQLTool ou OracleSQLTool(conn_cfg, row_limit)
+
+    Returns:
+        L'outil SQL instancié, ou None si la chaîne est incomplète.
+    """
     agent_cfg = db.get(COLL_AGENTS, agent_id)
     if not agent_cfg:
         return None
@@ -118,17 +198,41 @@ def _get_sql_tool_for_agent(agent_id: str) -> Optional[Any]:
 
 def _auto_schema_context(agent_id: str, task_description: str) -> str:
     """
-    Fetch the table list for the agent's connection and return schema info
-    for any table names mentioned in the task description.
+    Génère automatiquement le contexte de schéma à injecter dans le prompt analyste.
+
+    Cette fonction est appelée par `_run_analyst_subtask()` AVANT de lancer le LLM.
+    Elle permet au LLM de connaître les colonnes réelles d'une table sans avoir à
+    exécuter d'abord une requête DESCRIBE TABLE (ce qui évite un aller-retour).
+
+    Algorithme :
+      1. Liste toutes les tables de la base via `tool.list_tables()`.
+      2. Compare chaque nom de table (insensible à la casse) avec la description
+         de la tâche pour identifier les tables mentionnées.
+      3. Si des tables sont mentionnées → appelle `tool.get_schema(table)` pour
+         récupérer les colonnes, types, commentaires, clés de tri/partition.
+      4. Si aucune table n'est mentionnée → retourne simplement la liste de toutes
+         les tables (utile pour que le LLM choisisse lui-même).
+
+    Limites de sécurité :
+      - Maximum 5 tables avec schéma complet (évite les prompts trop longs).
+      - Maximum 50 tables dans la liste générale.
+
+    Args:
+        agent_id: ID de l'agent → permet de trouver la connexion DB.
+        task_description: Description de la tâche contenant les noms de tables.
+
+    Returns:
+        Chaîne Markdown décrivant le schéma, ou "" si la DB est inaccessible.
     """
     tool = _get_sql_tool_for_agent(agent_id)
     if not tool:
         return ""
 
     try:
-        # list_tables() returns List[str] directly
+        # list_tables() retourne directement une List[str]
+        # (pas un dict avec success/tables comme d'autres outils)
         all_tables: List[str] = tool.list_tables()
-        # Filter out error strings
+        # Filtre les erreurs éventuelles (list_tables() peut retourner ["ERROR: ..."])
         all_tables = [t for t in all_tables if not t.startswith("ERROR:")]
     except Exception as e:
         logger.warning("Could not list tables for schema context: %s", e)
@@ -137,20 +241,21 @@ def _auto_schema_context(agent_id: str, task_description: str) -> str:
     if not all_tables:
         return ""
 
-    # Find tables mentioned in the task description (case-insensitive)
+    # Détection des tables mentionnées dans la description de la tâche
     task_lower = task_description.lower()
     mentioned = [t for t in all_tables if t.lower() in task_lower]
 
-    # If nothing specific is mentioned, provide the full table list
+    # Aucune table spécifique → fournit la liste complète pour orienter le LLM
     if not mentioned:
         table_list = ", ".join(all_tables[:50])
         return f"Available tables: {table_list}"
 
-    # Fetch schema for each mentioned table
+    # Récupération du schéma détaillé pour chaque table mentionnée
     schema_parts = []
-    for table in mentioned[:5]:  # limit to 5 tables
+    for table in mentioned[:5]:  # limite à 5 tables pour ne pas saturer le prompt
         try:
-            # get_schema() returns {"table":..., "columns":[...], "metadata":{...}} or {"error":...}
+            # get_schema() retourne {"table":..., "columns":[...], "metadata":{...}}
+            # ou {"error": "..."} en cas d'échec
             schema_result = tool.get_schema(table)
             if "error" not in schema_result and schema_result.get("columns"):
                 cols = schema_result["columns"]
@@ -160,6 +265,7 @@ def _auto_schema_context(agent_id: str, task_description: str) -> str:
                 )
                 meta = schema_result.get("metadata", {})
                 meta_info = ""
+                # La sorting_key ClickHouse est cruciale pour les performances SQL
                 if meta.get("sorting_key"):
                     meta_info += f"\n  Sorting key: {meta['sorting_key']}"
                 if meta.get("partition_key"):
@@ -170,65 +276,110 @@ def _auto_schema_context(agent_id: str, task_description: str) -> str:
 
     if schema_parts:
         return "\n\n".join(schema_parts)
+    # Fallback si le schéma est inaccessible mais les tables sont connues
     table_list = ", ".join(all_tables[:50])
     return f"Available tables: {table_list}"
 
 
 def _run_analyst_subtask(agent_id: str, task_description: str) -> Dict[str, Any]:
     """
-    Execute the real analyst pipeline: analyst_node → sql_tool_node → synthesizer_node.
-    Returns a result dict with success flag and actual data.
+    Exécute le pipeline analyste complet pour une sous-tâche de données.
+
+    C'est le cœur de la délégation réelle : au lieu d'appeler un LLM générique
+    qui inventerait des résultats, cette fonction exécute la vraie chaîne :
+      analyst_node → sql_tool_node → synthesizer_node
+
+    Pourquoi ne pas réutiliser le graphe compilé `build_analyst_graph()` ?
+    Les nœuds du graphe compilé passent par le checkpointer (MemorySaver) et
+    nécessitent un `config` avec `thread_id`. En appelant les fonctions nœuds
+    directement, on évite cette complexité tout en gardant le même comportement.
+    Le retry loop est géré ici explicitement plutôt que par les edges LangGraph.
+
+    Déroulement :
+      1. `_auto_schema_context()` → schéma réel de la DB (avant tout appel LLM)
+      2. Initialisation de l'état AnalystState
+      3. Boucle retry (max `max_retries` tentatives) :
+         a. `analyst_node(state)` → génère le SQL (en tenant compte des erreurs précédentes)
+         b. `sql_tool_node(state)` → exécute le SQL sur la vraie DB
+         c. Si succès → sort de la boucle
+         d. Si échec → continue (l'erreur dans state["last_error"] sera lue au prochain tour)
+      4. `synthesizer_node(state)` → transforme les données brutes en narrative Markdown
+
+    Args:
+        agent_id: ID de l'agent analyste configuré avec la bonne connexion DB.
+        task_description: Description de la tâche en langage naturel (ex: "Compte
+                          le nombre de lignes dans la table orders par jour").
+
+    Returns:
+        Dict contenant :
+          - "success" (bool) : True si au moins une requête a réussi.
+          - "result" (str) : Narrative Markdown finale (vraies données ou message d'erreur).
+          - "sql_executed" (str|None) : Dernier SQL exécuté.
+          - "row_count" (int) : Nombre de lignes retournées (0 si échec).
+          - "error" (str|None) : Dernière erreur (None si succès).
     """
     max_retries = 3
 
-    # Pre-fetch schema context
+    # Étape 1 : pré-chargement du schéma (avant tout appel LLM)
+    # Cela évite un premier aller-retour SQL "DESCRIBE TABLE" et enrichit
+    # immédiatement le prompt de l'analyste
     schema_context = _auto_schema_context(agent_id, task_description)
     logger.info("Running analyst subtask for agent %s: %s", agent_id, task_description[:100])
     logger.info("Schema context length: %d chars", len(schema_context))
 
-    # Initial analyst state
+    # Étape 2 : initialisation de l'état AnalystState
+    # Correspond exactement à la TypedDict définie dans state.py
     state: Dict[str, Any] = {
-        "messages": [HumanMessage(content=task_description)],
+        "messages": [HumanMessage(content=task_description)],  # question initiale
         "user_question": task_description,
-        "generated_sql": None,
-        "query_result": None,
+        "generated_sql": None,       # sera rempli par analyst_node
+        "query_result": None,        # sera rempli par sql_tool_node
         "retry_count": 0,
         "max_retries": max_retries,
-        "last_error": None,
-        "final_answer": None,
+        "last_error": None,          # rempli par sql_tool_node en cas d'erreur
+        "final_answer": None,        # rempli par synthesizer_node
         "schema_context": schema_context,
         "agent_id": agent_id,
-        "session_id": "orchestrator_subtask",
+        "session_id": "orchestrator_subtask",  # ID factice (pas de checkpointer ici)
     }
 
-    # Run analyst → sql loop with retries
+    # Étape 3 : boucle analyst → sql avec retry automatique
     for attempt in range(max_retries + 1):
         try:
+            # analyst_node génère le SQL (ou le corrige si last_error est renseigné)
             analyst_result = analyst_node(state)
-            state.update(analyst_result)
+            state.update(analyst_result)  # met à jour generated_sql + messages
 
+            # sql_tool_node exécute le SQL sur la base réelle
             tool_result = sql_tool_node(state)
-            state.update(tool_result)
+            state.update(tool_result)   # met à jour query_result, last_error, retry_count
 
             if state.get("query_result", {}).get("success"):
                 logger.info("Analyst subtask succeeded on attempt %d", attempt + 1)
-                break
+                break  # succès → on sort de la boucle et on passe à la synthèse
 
             if attempt < max_retries:
-                logger.info("Analyst subtask attempt %d failed, retrying... error: %s",
-                            attempt + 1, state.get("last_error"))
+                logger.info(
+                    "Analyst subtask attempt %d failed, retrying... error: %s",
+                    attempt + 1, state.get("last_error")
+                )
+            # L'erreur reste dans state["last_error"] et sera lue par analyst_node
+            # au prochain tour pour corriger le SQL
+
         except Exception as e:
+            # Exception Python (pas une erreur SQL) : connexion impossible, timeout, etc.
             logger.error("Analyst subtask exception on attempt %d: %s", attempt + 1, e)
             state["last_error"] = str(e)
             if attempt >= max_retries:
                 break
 
-    # Run synthesizer
+    # Étape 4 : synthèse narrative (même en cas d'échec partiel)
     try:
         synth_result = analyst_synthesizer_node(state)
-        state.update(synth_result)
+        state.update(synth_result)  # met à jour final_answer
     except Exception as e:
         logger.error("Analyst synthesizer failed: %s", e)
+        # Fallback minimal : le résultat brut sera retourné sans mise en forme
         state["final_answer"] = f"Analysis completed but synthesis failed: {e}"
 
     query_result = state.get("query_result", {})
@@ -236,6 +387,7 @@ def _run_analyst_subtask(agent_id: str, task_description: str) -> Dict[str, Any]
 
     return {
         "success": success,
+        # Si final_answer est None (edge case), on génère un message d'erreur explicite
         "result": state.get("final_answer") or (
             f"❌ Analysis failed after {max_retries} attempts.\nLast error: {state.get('last_error')}"
         ),
@@ -245,13 +397,42 @@ def _run_analyst_subtask(agent_id: str, task_description: str) -> Dict[str, Any]
     }
 
 
-# ── Node implementations ──────────────────────────────────────────────────────
+# ── Nœuds du graphe orchestrateur ────────────────────────────────────────────
 
 def planner_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Decompose the user request into a backlog of tasks."""
+    """
+    Nœud 1 — Planification et décomposition de la requête.
+
+    Rôle :
+        Interroge le LLM pour décomposer `state["user_request"]` en une liste
+        ordonnée de sous-tâches (le « backlog »). Chaque tâche spécifie :
+          - son type (`agent_type`) : quel spécialiste doit l'exécuter
+          - son `agent_id` : ID exact de l'agent à utiliser pour les tâches data
+          - sa priorité et ses dépendances (`depends_on`)
+          - si elle nécessite une validation humaine
+
+    Injection dynamique des agents :
+        Avant de construire le prompt, ce nœud charge depuis la base tous les
+        agents analystes actifs et les injecte dans le placeholder `{agents_block}`
+        du PLANNER_SYSTEM. Le LLM peut alors assigner les bons `agent_id` dans
+        le plan, ce qui permet à `worker_node` de les retrouver sans ambiguïté.
+
+    Parsing du JSON :
+        La réponse du LLM doit être un JSON pur. Les balises Markdown éventuelles
+        (```json … ```) sont nettoyées avant le parsing. En cas d'échec de parsing,
+        un fallback crée une tâche unique pointant vers le premier agent analyste
+        disponible (ou "orchestrator" s'il n'y en a pas).
+
+    Modifications de l'état :
+        - `task_backlog` : liste des tâches planifiées.
+        - `current_task` : None (pas encore de tâche en cours).
+        - `worker_results` : [] (réinitialisé au début du workflow).
+        - `iteration` : 0 (compteur remis à zéro).
+        - `messages` : résumé du plan créé.
+    """
     llm = build_llm()
 
-    # Build analyst agents block for the prompt
+    # Charge les agents analystes actifs pour les injecter dans le prompt
     analysts = [
         a for a in db.get_all(COLL_AGENTS)
         if a.get("type") in ("clickhouse_analyst", "oracle_analyst") and a.get("is_active", True)
@@ -265,6 +446,7 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
     else:
         agents_block = "No analyst agents configured — use agent_type=orchestrator for all tasks."
 
+    # Substitution du placeholder {agents_block} dans le template PLANNER_SYSTEM
     system_content = PLANNER_SYSTEM.format(agents_block=agents_block)
 
     messages = [
@@ -276,7 +458,7 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
         response = llm.invoke(messages)
         raw = response.content.strip()
 
-        # Extract JSON from markdown code blocks if present
+        # Nettoyage des balises Markdown que certains LLMs ajoutent malgré les instructions
         if "```json" in raw:
             raw = raw.split("```json")[1].split("```")[0].strip()
         elif "```" in raw:
@@ -296,7 +478,7 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
         }
     except (json.JSONDecodeError, KeyError) as e:
         logger.error("Planner failed to parse JSON: %s", e)
-        # Fallback: single task routed to first available analyst
+        # Fallback : tâche unique dirigée vers le premier analyste disponible
         agent_type = "orchestrator"
         agent_id = None
         if analysts:
@@ -322,21 +504,50 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
 
 
 def task_dispatcher_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Pick the next pending task from the backlog."""
+    """
+    Nœud 2 — Sélection de la prochaine tâche à exécuter.
+
+    Rôle :
+        Parcourt le backlog et identifie la prochaine tâche exécutable en
+        respectant l'ordre de priorité et les dépendances entre tâches.
+
+    Gestion des dépendances :
+        Une tâche n'est éligible que si toutes les tâches listées dans son
+        champ `depends_on` ont déjà un résultat dans `worker_results`.
+        Cela permet des workflows séquentiels (ex : analyser d'abord les
+        données brutes, puis agréger les résultats).
+
+    Human-in-the-loop :
+        Si la prochaine tâche porte `requires_human_approval: true`, le nœud
+        met `awaiting_human = True` et `route_after_dispatcher` bascule vers
+        `human_feedback_node` qui déclenche l'interruption LangGraph.
+
+    Fin de backlog :
+        Si toutes les tâches sont terminées (ou si aucune tâche n'est éligible),
+        `current_task` est mis à None → `route_after_dispatcher` bascule vers
+        `synthesizer_node`.
+
+    Modifications de l'état :
+        - `current_task` : prochaine tâche à exécuter (ou None si backlog vide).
+        - `awaiting_human` : True si approbation requise.
+        - `iteration` : incrémenté (+1 à chaque passage).
+    """
     backlog = state.get("task_backlog", [])
+    # Ensemble des IDs de tâches déjà exécutées (succès OU échec)
     completed_ids = {r["task_id"] for r in state.get("worker_results", [])}
 
-    # Find next executable task (respecting dependencies)
+    # Tri par priorité (1 = la plus haute), puis vérification des dépendances
     next_task = None
     for task in sorted(backlog, key=lambda t: t.get("priority", 99)):
         if task["id"] in completed_ids:
-            continue
+            continue  # déjà exécutée
         deps = task.get("depends_on", [])
         if all(dep in completed_ids for dep in deps):
-            next_task = task
+            next_task = task  # toutes les dépendances sont satisfaites
             break
 
     if next_task and next_task.get("requires_human_approval"):
+        # Interruption humaine : message d'attente + flag awaiting_human
         return {
             "current_task": next_task,
             "awaiting_human": True,
@@ -348,24 +559,61 @@ def task_dispatcher_node(state: OrchestratorState) -> Dict[str, Any]:
         }
 
     return {
-        "current_task": next_task,
+        "current_task": next_task,        # None si backlog épuisé
         "awaiting_human": False,
         "iteration": state.get("iteration", 0) + 1,
     }
 
 
 def worker_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Execute the current task — routes analyst tasks to real SQL pipeline."""
+    """
+    Nœud 3 — Exécution de la tâche courante.
+
+    C'est le nœud le plus important : il décide comment exécuter la tâche
+    selon son `agent_type`.
+
+    Deux chemins d'exécution :
+
+    ── A) Agent analyste data (clickhouse_analyst / oracle_analyst) ──────────
+      1. `_find_analyst_agent(agent_type, agent_id_hint)` → ID de l'agent
+      2. `_run_analyst_subtask(agent_id, description)` → pipeline SQL réel :
+             analyst_node → sql_tool_node → synthesizer_node
+         Le résultat contient de vraies données issues de la base de données.
+      Le résultat est ajouté à `worker_results` avec les métadonnées SQL
+      (sql_executed, row_count) pour traçabilité.
+
+    ── B) Worker LLM générique (orchestrator) ───────────────────────────────
+      Pour les tâches non-data (rédaction, agrégation logique, formatage…),
+      un LLM générique est invoqué avec :
+        - Le contexte des tâches précédentes (résultats dans worker_results)
+        - La description de la tâche courante
+      Ce chemin NE doit PAS être utilisé pour des questions de données, car
+      le LLM inventerait des chiffres plutôt que d'interroger la base.
+
+    Gestion des erreurs :
+        Tout échec (agent non trouvé, exception SQL, erreur LLM) est capturé
+        et ajouté à `worker_results` avec `success: False`. Le nœud ne lève
+        jamais d'exception lui-même — l'erreur est propagée via l'état pour
+        que `route_after_worker` puisse décider de retry ou de continuer.
+
+    Modifications de l'état :
+        - `worker_results` : nouvelle entrée ajoutée (succès ou échec).
+        - `last_error` : None si succès, message d'erreur sinon.
+        - `messages` : statut de la tâche.
+    """
     task = state.get("current_task")
     if not task:
+        # Edge case : dispatcher a mis current_task à None mais worker est appelé
         return {"worker_results": state.get("worker_results", [])}
 
     agent_type = task.get("agent_type", "orchestrator")
 
-    # ── Real analyst delegation ──────────────────────────────────────────────
+    # ── Chemin A : délégation au pipeline analyste SQL réel ─────────────────
     if agent_type in ("clickhouse_analyst", "oracle_analyst"):
+        # Résolution de l'agent : priorité à l'agent_id suggéré par le planner
         agent_id = task.get("agent_id") or _find_analyst_agent(agent_type)
         if not agent_id:
+            # Aucun agent actif du bon type → erreur explicite
             result_entry = {
                 "task_id": task["id"],
                 "task_description": task["description"],
@@ -376,19 +624,21 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
             }
         else:
             try:
+                # Exécution réelle du sous-pipeline analyste
                 subtask_result = _run_analyst_subtask(agent_id, task["description"])
                 result_entry = {
                     "task_id": task["id"],
                     "task_description": task["description"],
                     "agent_type": agent_type,
-                    "result": subtask_result["result"],
+                    "result": subtask_result["result"],        # narrative Markdown avec vraies données
                     "success": subtask_result["success"],
-                    "sql_executed": subtask_result.get("sql_executed"),
+                    "sql_executed": subtask_result.get("sql_executed"),  # pour traçabilité
                     "row_count": subtask_result.get("row_count", 0),
                 }
                 if not subtask_result["success"]:
                     result_entry["error"] = subtask_result.get("error")
             except Exception as e:
+                # Exception inattendue (bug Python, pas une erreur SQL)
                 logger.error("Analyst subtask raised exception: %s", e, exc_info=True)
                 result_entry = {
                     "task_id": task["id"],
@@ -399,6 +649,7 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                     "error": str(e),
                 }
 
+        # Ajout du résultat au tableau cumulatif (immutable list pattern de LangGraph)
         updated_results = state.get("worker_results", []) + [result_entry]
         last_error = result_entry.get("error") if not result_entry["success"] else None
         return {
@@ -407,8 +658,11 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
             "last_error": last_error,
         }
 
-    # ── Generic LLM worker (orchestrator tasks) ──────────────────────────────
+    # ── Chemin B : worker LLM générique pour les tâches non-data ────────────
     llm = build_llm()
+    # Construit le contexte depuis les résultats des tâches précédentes
+    # Le LLM peut ainsi s'appuyer sur les données déjà analysées pour
+    # rédiger un résumé, une conclusion ou effectuer un calcul logique
     context = "\n\n".join(
         f"[Task {r['task_id']}]: {r['result']}"
         for r in state.get("worker_results", [])
@@ -457,7 +711,27 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
 
 
 def corrector_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Analyze last error and inject corrected instructions for retry."""
+    """
+    Nœud 4 — Correction des instructions avant un retry.
+
+    Atteint uniquement si `route_after_worker` détecte un échec ET que le
+    nombre de retries n'est pas épuisé (< 3 tentatives par tâche).
+
+    Rôle :
+        Demande au LLM d'analyser le message d'erreur (`state["last_error"]`)
+        et la description de la tâche ayant échoué, puis de produire une
+        description corrigée qui permettra au worker de réussir au prochain essai.
+
+    Cas d'usage typique pour les tâches orchestrateur génériques :
+        - Tâche trop vague → instruction plus précise
+        - Mauvais format demandé → instruction reformatée
+        (Pour les tâches analytiques data, le retry est géré dans _run_analyst_subtask)
+
+    Modifications de l'état :
+        - `current_task` : même tâche avec `description` remplacée par la
+          version corrigée du LLM.
+        - `messages` : confirmation de l'application de la correction.
+    """
     llm = build_llm()
     task = state.get("current_task", {})
     error = state.get("last_error", "Unknown error")
@@ -471,6 +745,8 @@ def corrector_node(state: OrchestratorState) -> Dict[str, Any]:
     ]
 
     response = llm.invoke(messages)
+    # Crée une copie de la tâche avec la description corrigée
+    # (les autres champs comme agent_type, agent_id, depends_on restent identiques)
     corrected_task = dict(task)
     corrected_task["description"] = response.content
 
@@ -481,9 +757,31 @@ def corrector_node(state: OrchestratorState) -> Dict[str, Any]:
 
 
 def synthesizer_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Compile all worker results into a final coherent answer."""
+    """
+    Nœud 5 — Synthèse finale de tous les résultats workers.
+
+    Rôle :
+        Compile tous les résultats des workers (dans `state["worker_results"]`)
+        en une réponse finale cohérente et structurée en Markdown.
+
+        Le LLM reçoit :
+          - La requête originale de l'utilisateur
+          - Les résultats de chaque tâche (incluant les vraies données SQL)
+          - L'instruction explicite de NE PAS remplacer les données réelles
+            par des placeholders (critique pour éviter les régressions)
+
+    Position dans le workflow :
+        Appelé depuis `route_after_dispatcher` (backlog épuisé ou limite
+        d'itérations atteinte) ou depuis `route_after_worker` (toutes tâches
+        terminées). C'est toujours le dernier nœud avant END.
+
+    Modifications de l'état :
+        - `final_answer` : réponse Markdown complète retournée à l'utilisateur.
+        - `messages` : le même contenu ajouté au fil de messages LangChain.
+    """
     llm = build_llm()
 
+    # Formate chaque résultat worker avec sa description pour contexte
     results_text = "\n\n".join(
         f"**{r['task_description']}**\n{r['result']}"
         for r in state.get("worker_results", [])
@@ -506,63 +804,145 @@ def synthesizer_node(state: OrchestratorState) -> Dict[str, Any]:
 
 
 def human_feedback_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Interrupt point — waits for human input (handled by LangGraph interrupt)."""
+    """
+    Nœud 6 — Point d'interruption pour validation humaine.
+
+    Ce nœud est déclaré dans `interrupt_before=["human_feedback"]` lors de la
+    compilation du graphe. Cela signifie que LangGraph interrompt l'exécution
+    AVANT d'entrer dans ce nœud, sauvegarde l'état complet via le checkpointer,
+    et rend la main à l'appelant (l'API FastAPI).
+
+    L'API peut alors :
+      1. Retourner l'état courant au frontend (question + tâche en attente)
+      2. Afficher une modale de confirmation à l'utilisateur
+      3. Sur validation, reprendre le graphe via `graph.invoke(None, config)`
+         qui reprend depuis le checkpoint et exécute ce nœud (qui ne fait que
+         remettre `awaiting_human = False`)
+
+    Modifications de l'état :
+        - `awaiting_human` : False (réinitialisation après validation humaine).
+    """
+    # Ce nœud est intentionnellement minimal — toute la logique d'interruption
+    # est gérée par LangGraph via interrupt_before à la compilation
     return {"awaiting_human": False}
 
 
-# ── Routing functions ─────────────────────────────────────────────────────────
+# ── Fonctions de routage (edges conditionnelles) ─────────────────────────────
+# Ces fonctions sont des routeurs purs : elles inspectent l'état et retournent
+# une chaîne de caractères correspondant au nom du prochain nœud.
+# Elles sont plus rapides et déterministes que de demander au LLM de router.
 
 def route_after_dispatcher(state: OrchestratorState) -> Literal["worker", "synthesizer", "human_feedback"]:
+    """
+    Décide la suite après la sélection d'une tâche par le dispatcher.
+
+    Priorités de routage :
+      1. "human_feedback" si une approbation humaine est requise.
+      2. "synthesizer" si plus aucune tâche n'est disponible (current_task=None)
+         ou si la limite d'itérations est atteinte (anti-boucle infinie).
+      3. "worker" dans tous les autres cas (tâche disponible et limite non atteinte).
+    """
     if state.get("awaiting_human"):
         return "human_feedback"
     if state.get("current_task") is None:
+        # Backlog épuisé → tous les résultats sont disponibles pour la synthèse
         return "synthesizer"
     if state.get("iteration", 0) >= state.get("max_iterations", 10):
+        # Limite d'itérations atteinte → forcer la synthèse avec les résultats disponibles
         return "synthesizer"
     return "worker"
 
 
 def route_after_worker(state: OrchestratorState) -> Literal["dispatcher", "corrector", "synthesizer"]:
+    """
+    Décide la suite après l'exécution d'une tâche par le worker.
+
+    Priorités de routage :
+      1. "corrector" si la dernière tâche a échoué ET qu'il reste des tentatives
+         disponibles (< 3 échecs pour cette même tâche).
+      2. "synthesizer" si toutes les tâches du backlog sont dans worker_results.
+      3. "dispatcher" pour passer à la prochaine tâche du backlog.
+
+    Note sur le comptage des retries :
+        Le nombre de retries est calculé dynamiquement en comptant combien de
+        fois le même `task_id` apparaît dans `worker_results`. Cela permet de
+        gérer les retries sans champ dédié dans l'état.
+    """
     results = state.get("worker_results", [])
     backlog = state.get("task_backlog", [])
     completed_ids = {r["task_id"] for r in results}
 
-    # Check if last task failed
+    # Vérification d'un échec sur la dernière tâche
     if results and not results[-1].get("success", True):
+        # Compte le nombre de tentatives pour cette tâche (même task_id)
         retry_count = sum(1 for r in results if r["task_id"] == results[-1]["task_id"])
         max_retries = 3
         if retry_count < max_retries:
+            # Des tentatives restent → correction + retry
             return "corrector"
+        # Sinon : max retries atteints → on considère la tâche "terminée" (avec échec)
+        # et on passe aux tâches suivantes ou à la synthèse
 
-    # Check if all tasks complete
+    # Toutes les tâches ont au moins un résultat → synthèse finale
     all_done = all(t["id"] in completed_ids for t in backlog)
     if all_done:
         return "synthesizer"
 
+    # Il reste des tâches → retour au dispatcher
     return "dispatcher"
 
 
-# ── Graph builder ─────────────────────────────────────────────────────────────
+# ── Construction du graphe LangGraph ─────────────────────────────────────────
 
 def build_orchestrator_graph():
-    """Build and compile the orchestrator LangGraph."""
+    """
+    Assemble et compile le graphe LangGraph orchestrateur.
+
+    Structure du graphe compilé :
+        START → planner → dispatcher → [worker | synthesizer | human_feedback]
+                                worker → [dispatcher | corrector | synthesizer]
+                               corrector → worker
+                          human_feedback → dispatcher
+                             synthesizer → END
+
+    Checkpointing :
+        Utilise `MemorySaver` (stockage en mémoire) comme checkpointer.
+        Chaque invocation de nœud est sauvegardée, ce qui permet :
+          - L'interruption human-in-the-loop (reprise depuis l'état sauvegardé)
+          - L'inspection de l'état intermédiaire pour le débogage
+          - La reprise après timeout (si on passait à un checkpointer persistant)
+
+    interrupt_before :
+        Le graphe est configuré pour s'interrompre AVANT d'entrer dans
+        `human_feedback_node`. L'appelant doit fournir un `config` avec un
+        `thread_id` unique pour que le checkpointer puisse isoler les états
+        de différentes conversations simultanées.
+
+    Returns:
+        Graphe LangGraph compilé, invocable via `.invoke(initial_state, config)`.
+    """
     builder = StateGraph(OrchestratorState)
 
-    # Nodes
-    builder.add_node("planner", planner_node)
-    builder.add_node("dispatcher", task_dispatcher_node)
-    builder.add_node("worker", worker_node)
-    builder.add_node("corrector", corrector_node)
-    builder.add_node("synthesizer", synthesizer_node)
-    builder.add_node("human_feedback", human_feedback_node)
+    # ── Enregistrement des nœuds ────────────────────────────────────────────
+    builder.add_node("planner", planner_node)              # décomposition
+    builder.add_node("dispatcher", task_dispatcher_node)   # sélection tâche
+    builder.add_node("worker", worker_node)                # exécution (SQL réel ou LLM)
+    builder.add_node("corrector", corrector_node)          # correction avant retry
+    builder.add_node("synthesizer", synthesizer_node)      # synthèse finale
+    builder.add_node("human_feedback", human_feedback_node)  # interruption humaine
 
-    # Edges
-    builder.add_edge(START, "planner")
-    builder.add_edge("planner", "dispatcher")
+    # ── Edges fixes (toujours suivis) ───────────────────────────────────────
+    builder.add_edge(START, "planner")          # entrée → planification
+    builder.add_edge("planner", "dispatcher")   # planification → sélection
+    builder.add_edge("corrector", "worker")     # correction → retry worker
+    builder.add_edge("human_feedback", "dispatcher")  # validation → suite du backlog
+    builder.add_edge("synthesizer", END)        # synthèse → fin
 
+    # ── Edges conditionnelles (routage dynamique selon l'état) ───────────────
+    # Après la sélection d'une tâche → qui l'exécute ?
     builder.add_conditional_edges(
-        "dispatcher",
-        route_after_dispatcher,
+        "dispatcher",                 # nœud source
+        route_after_dispatcher,       # fonction de décision
         {
             "worker": "worker",
             "synthesizer": "synthesizer",
@@ -570,23 +950,22 @@ def build_orchestrator_graph():
         },
     )
 
+    # Après l'exécution d'une tâche → que fait-on ensuite ?
     builder.add_conditional_edges(
-        "worker",
-        route_after_worker,
+        "worker",                 # nœud source
+        route_after_worker,       # fonction de décision
         {
-            "dispatcher": "dispatcher",
-            "corrector": "corrector",
-            "synthesizer": "synthesizer",
+            "dispatcher": "dispatcher",  # prochaine tâche
+            "corrector": "corrector",    # correction avant retry
+            "synthesizer": "synthesizer", # toutes tâches terminées
         },
     )
 
-    builder.add_edge("corrector", "worker")
-    builder.add_edge("human_feedback", "dispatcher")
-    builder.add_edge("synthesizer", END)
-
+    # ── Compilation avec checkpointer et points d'interruption ──────────────
     checkpointer = MemorySaver()
     graph = builder.compile(
         checkpointer=checkpointer,
+        # Interruption AVANT human_feedback (permet la validation externe)
         interrupt_before=["human_feedback"],
     )
 
