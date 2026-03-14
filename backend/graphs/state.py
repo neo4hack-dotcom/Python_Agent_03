@@ -26,6 +26,8 @@ class OrchestratorState(TypedDict):
     iteration: int
     # Max iterations allowed
     max_iterations: int
+    # Last error message (used by corrector_node)
+    last_error: Optional[str]
     # Agent ID being used
     agent_id: str
     # Session metadata
