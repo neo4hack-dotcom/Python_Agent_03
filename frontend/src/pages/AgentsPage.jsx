@@ -7,6 +7,7 @@ import AgentModal from '../components/AgentModal'
 
 const TYPE_LABELS = {
   orchestrator: { label: 'Orchestrateur', icon: '🎯', css: 'agent-icon-orchestrator' },
+  data_analyst: { label: 'Analyste de Données', icon: '🧠', css: 'agent-icon-data-analyst' },
   clickhouse_analyst: { label: 'Analyste ClickHouse', icon: '📊', css: 'agent-icon-analyst' },
   oracle_analyst: { label: 'Analyste Oracle', icon: '🔮', css: 'agent-icon-analyst' },
   custom: { label: 'Personnalisé', icon: '🤖', css: 'agent-icon-custom' },

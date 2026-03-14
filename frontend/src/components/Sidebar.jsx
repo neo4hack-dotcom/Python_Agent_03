@@ -17,6 +17,7 @@ export default function Sidebar({ open, onToggle }) {
 
   const agentIcon = (type) => {
     if (type === 'orchestrator') return '🎯'
+    if (type === 'data_analyst') return '🧠'
     if (type === 'clickhouse_analyst') return '📊'
     if (type === 'oracle_analyst') return '🔮'
     return '🤖'

@@ -58,9 +58,18 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import OrchestratorState
 from .llm_factory import build_llm
-# Import des nœuds individuels du graphe analyste pour appel direct
+# Import des nœuds individuels du graphe analyste SQL pour appel direct
 # (sans passer par le graphe compilé, afin de contrôler le retry loop ici)
 from .analyst_graph import analyst_node, sql_tool_node, synthesizer_node as analyst_synthesizer_node
+# Import des nœuds du graphe analyste de données pour délégation directe
+from .data_analyst_graph import (
+    planner_node as da_planner_node,
+    sql_executor_node as da_sql_executor_node,
+    analyst_node as da_analyst_node,
+    synthesizer_node as da_synthesizer_node,
+    _has_connection as da_has_connection,
+    _auto_schema_context as da_auto_schema_context,
+)
 from backend.database import db, COLL_AGENTS, COLL_CONNECTIONS
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
 from backend.tools.sql_oracle import OracleSQLTool
@@ -93,7 +102,7 @@ Respond ONLY with a JSON object in this exact format:
     {{
       "id": "task_1",
       "description": "<specific task with exact table/column names>",
-      "agent_type": "<clickhouse_analyst|oracle_analyst|orchestrator|human_validation>",
+      "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|orchestrator|human_validation>",
       "agent_id": "<id of the analyst agent to use, or null for orchestrator tasks>",
       "priority": 1,
       "depends_on": [],
@@ -147,7 +156,7 @@ def _find_analyst_agent(agent_type: str, agent_id_hint: Optional[str] = None) ->
       3. Si aucun agent n'est trouvé, retourne None (le worker affichera une erreur).
 
     Args:
-        agent_type: "clickhouse_analyst" ou "oracle_analyst".
+        agent_type: "clickhouse_analyst", "oracle_analyst" ou "data_analyst".
         agent_id_hint: ID suggéré par le planner (peut être None ou invalide).
 
     Returns:
@@ -397,6 +406,81 @@ def _run_analyst_subtask(agent_id: str, task_description: str) -> Dict[str, Any]
     }
 
 
+def _run_data_analyst_subtask(agent_id: str, task_description: str) -> Dict[str, Any]:
+    """
+    Exécute le pipeline data analyst complet pour une sous-tâche de l'orchestrateur.
+
+    Pipeline exécuté :
+      da_planner_node → [da_sql_executor_node →] da_analyst_node → da_synthesizer_node
+
+    Contrairement à `_run_analyst_subtask` (centré SQL avec retry), ce pipeline :
+      - Planifie d'abord l'analyse (type, métriques, SQL si pertinent)
+      - Exécute jusqu'à N requêtes SQL en parallèle (multi-query)
+      - Effectue une analyse statistique/business approfondie
+      - Produit une synthèse narrative orientée décideur
+
+    Args:
+        agent_id: ID de l'agent data_analyst configuré.
+        task_description: Description de la tâche analytique à réaliser.
+
+    Returns:
+        Dict avec "success", "result" (narrative Markdown), "data_fetched" (bool).
+    """
+    logger.info("Running data analyst subtask for agent %s: %s", agent_id, task_description[:100])
+
+    # Pré-chargement du schéma pour le planner
+    schema_context = da_auto_schema_context(agent_id, task_description)
+
+    # Initialisation de l'état DataAnalystState
+    state: Dict[str, Any] = {
+        "messages": [HumanMessage(content=task_description)],
+        "user_question": task_description,
+        "analysis_plan": None,
+        "sql_queries": None,
+        "data_results": None,
+        "analysis_output": None,
+        "final_answer": None,
+        "schema_context": schema_context,
+        "agent_id": agent_id,
+        "session_id": "orchestrator_subtask",
+        "last_error": None,
+    }
+
+    try:
+        # Étape 1 : planification (type d'analyse + SQL si pertinent)
+        state.update(da_planner_node(state))
+
+        # Étape 2 : exécution SQL si des requêtes ont été planifiées et DB disponible
+        sql_queries = state.get("sql_queries") or []
+        if sql_queries and da_has_connection(agent_id):
+            state.update(da_sql_executor_node(state))
+
+        # Étape 3 : analyse approfondie
+        state.update(da_analyst_node(state))
+
+        # Étape 4 : synthèse business
+        state.update(da_synthesizer_node(state))
+
+    except Exception as e:
+        logger.error("Data analyst subtask failed: %s", e, exc_info=True)
+        return {
+            "success": False,
+            "result": f"❌ Data analyst execution error: {e}",
+            "data_fetched": False,
+            "error": str(e),
+        }
+
+    data_results = state.get("data_results") or []
+    data_fetched = any(r.get("success") for r in data_results)
+
+    return {
+        "success": True,
+        "result": state.get("final_answer") or "Analysis completed without final synthesis.",
+        "data_fetched": data_fetched,
+        "queries_run": len(data_results),
+    }
+
+
 # ── Nœuds du graphe orchestrateur ────────────────────────────────────────────
 
 def planner_node(state: OrchestratorState) -> Dict[str, Any]:
@@ -432,10 +516,11 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
     """
     llm = build_llm()
 
-    # Charge les agents analystes actifs pour les injecter dans le prompt
+    # Charge tous les agents spécialistes actifs (SQL + data analyst)
     analysts = [
         a for a in db.get_all(COLL_AGENTS)
-        if a.get("type") in ("clickhouse_analyst", "oracle_analyst") and a.get("is_active", True)
+        if a.get("type") in ("clickhouse_analyst", "oracle_analyst", "data_analyst")
+        and a.get("is_active", True)
     ]
     if analysts:
         agents_lines = "\n".join(
@@ -608,7 +693,52 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
 
     agent_type = task.get("agent_type", "orchestrator")
 
-    # ── Chemin A : délégation au pipeline analyste SQL réel ─────────────────
+    # ── Chemin A1 : délégation au pipeline data analyst (analyse + business) ─
+    if agent_type == "data_analyst":
+        agent_id = task.get("agent_id") or _find_analyst_agent(agent_type)
+        if not agent_id:
+            result_entry = {
+                "task_id": task["id"],
+                "task_description": task["description"],
+                "agent_type": agent_type,
+                "result": "❌ No active data_analyst agent found. Please create and configure one.",
+                "success": False,
+                "error": "No active data_analyst agent available.",
+            }
+        else:
+            try:
+                subtask_result = _run_data_analyst_subtask(agent_id, task["description"])
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "result": subtask_result["result"],
+                    "success": subtask_result["success"],
+                    "data_fetched": subtask_result.get("data_fetched", False),
+                    "queries_run": subtask_result.get("queries_run", 0),
+                }
+                if not subtask_result["success"]:
+                    result_entry["error"] = subtask_result.get("error")
+            except Exception as e:
+                logger.error("Data analyst subtask raised exception: %s", e, exc_info=True)
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "result": f"❌ Data analyst execution error: {e}",
+                    "success": False,
+                    "error": str(e),
+                }
+
+        updated_results = state.get("worker_results", []) + [result_entry]
+        last_error = result_entry.get("error") if not result_entry["success"] else None
+        return {
+            "worker_results": updated_results,
+            "messages": [AIMessage(content=f"Task '{task['id']}' {'completed' if result_entry['success'] else 'failed'}.")],
+            "last_error": last_error,
+        }
+
+    # ── Chemin A2 : délégation au pipeline analyste SQL réel ─────────────────
     if agent_type in ("clickhouse_analyst", "oracle_analyst"):
         # Résolution de l'agent : priorité à l'agent_id suggéré par le planner
         agent_id = task.get("agent_id") or _find_analyst_agent(agent_type)

@@ -24,6 +24,11 @@ DEFAULT_PROMPTS = {
         "You are an Oracle SQL expert. Generate optimized, read-only SQL queries "
         "with proper indexing hints and Oracle-specific functions."
     ),
+    "data_analyst": (
+        "You are a senior data analyst and business intelligence expert. "
+        "Perform statistical analysis, data profiling, trend analysis, KPI computation, "
+        "and deliver clear, data-driven business insights with actionable recommendations."
+    ),
     "custom": "You are a helpful AI assistant.",
 }
 

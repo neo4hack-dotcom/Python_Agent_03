@@ -4,6 +4,7 @@ import { agentsApi } from '../services/api'
 
 const AGENT_TYPES = [
   { value: 'orchestrator', label: '🎯 Orchestrateur', desc: 'Planifie, route et synthétise via plusieurs agents' },
+  { value: 'data_analyst', label: '🧠 Analyste de Données', desc: 'Analyse statistique, profiling, KPIs et insights business' },
   { value: 'clickhouse_analyst', label: '📊 Analyste ClickHouse', desc: 'Génère et exécute des requêtes SQL ClickHouse' },
   { value: 'oracle_analyst', label: '🔮 Analyste Oracle', desc: 'Génère et exécute des requêtes SQL Oracle' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
@@ -11,6 +12,17 @@ const AGENT_TYPES = [
 
 const DEFAULT_PROMPTS = {
   orchestrator: `Tu es un orchestrateur expert. Tu décomposes les tâches complexes en étapes, délègues aux spécialistes appropriés, et synthétises les résultats en réponses claires et actionnables.`,
+  data_analyst: `Tu es un analyste de données senior et expert en business intelligence.
+
+Tes capacités :
+- **Analyse statistique** : distributions, moyenne/médiane, écart-type, percentiles (P10→P99), outliers, corrélations
+- **Data profiling** : qualité des données, taux de NULL, cardinalité, valeurs aberrantes, couverture temporelle
+- **Analyse de tendances** : évolution temporelle, taux de croissance MoM/YoY, saisonnalité, anomalies
+- **KPIs métier** : calcul, interprétation et benchmark de métriques business
+- **Recommandations** : insights actionnables, comparaisons, diagnostic de performance
+
+Tu produis des rapports structurés avec : résumé exécutif, insights clés chiffrés, analyse détaillée, recommandations business et points de vigilance.
+Tu peux travailler avec ou sans base de données connectée.`,
   clickhouse_analyst: `Tu es un expert ClickHouse. Tu génères des requêtes SQL optimisées :
 - Jamais de SELECT * — sélectionne explicitement les colonnes
 - Filtre toujours sur les clés de partition (ORDER BY / PARTITION BY)
@@ -68,11 +80,12 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
     }
   }
 
-  const needsConnection = ['clickhouse_analyst', 'oracle_analyst'].includes(form.type)
+  const needsConnection = ['clickhouse_analyst', 'oracle_analyst', 'data_analyst'].includes(form.type)
+  const connectionOptional = form.type === 'data_analyst'
   const filteredConnections = connections.filter((c) => {
     if (form.type === 'clickhouse_analyst') return c.type === 'clickhouse'
     if (form.type === 'oracle_analyst') return c.type === 'oracle'
-    return true
+    return true // data_analyst peut se connecter à n'importe quel type de DB
   })
 
   return (
@@ -151,10 +164,17 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
 
               {needsConnection && (
                 <div className="form-group">
-                  <label className="form-label">Connexion Base de Données *</label>
+                  <label className="form-label">
+                    Connexion Base de Données {connectionOptional ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optionnelle)</span> : '*'}
+                  </label>
+                  {connectionOptional && (
+                    <p className="text-sm text-muted" style={{ marginBottom: 6 }}>
+                      💡 Sans connexion, l'agent analyse les données fournies dans la conversation. Avec une connexion, il peut aussi interroger directement la base.
+                    </p>
+                  )}
                   {filteredConnections.length === 0 ? (
                     <p className="text-sm text-warning">
-                      Aucune connexion {form.type === 'clickhouse_analyst' ? 'ClickHouse' : 'Oracle'} disponible.
+                      Aucune connexion disponible.
                       <a href="/connections" style={{ marginLeft: 6 }}>Créer une connexion →</a>
                     </p>
                   ) : (
@@ -163,7 +183,7 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
                       value={form.connection_id}
                       onChange={(e) => setForm((f) => ({ ...f, connection_id: e.target.value }))}
                     >
-                      <option value="">-- Sélectionner --</option>
+                      <option value="">{connectionOptional ? '-- Aucune (analyse sans DB) --' : '-- Sélectionner --'}</option>
                       {filteredConnections.map((c) => (
                         <option key={c.id} value={c.id}>{c.name} ({c.host}:{c.port})</option>
                       ))}

@@ -104,6 +104,85 @@ class OrchestratorState(TypedDict):
     session_id: str
 
 
+class DataAnalystState(TypedDict):
+    """
+    État du graphe Analyste de Données (data_analyst_graph.py).
+
+    Cet agent est un expert polyvalent capable de :
+      - Analyser des données statistiquement (distributions, corrélations, outliers)
+      - Réaliser un profiling de données (qualité, complétude, cardinalité)
+      - Identifier des tendances et patterns temporels
+      - Calculer des KPIs et métriques métier
+      - Produire des recommandations business actionnables
+
+    Contrairement à l'AnalystState (centré sur le SQL), le DataAnalystState
+    gère un workflow en deux temps :
+      1. Planification : le LLM détermine le type d'analyse et les données nécessaires
+      2. Optionnel : exécution SQL si l'agent a une connexion DB configurée
+      3. Analyse approfondie sur les données récupérées
+      4. Synthèse business
+
+    L'agent fonctionne AUSSI sans connexion DB (analyse de données fournies
+    dans la conversation, datasets copiés-collés, questions business générales).
+
+    Cycle principal :
+      START → planner → [sql_executor →] analyst → synthesizer → END
+    """
+
+    # ── Fil de messages LangChain ────────────────────────────────────────────
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+    # ── Question de l'utilisateur ────────────────────────────────────────────
+    # La question analytique en langage naturel. Ex :
+    #   "Analyse la distribution des ventes par région ce trimestre"
+    #   "Quels sont les produits qui sous-performent ?"
+    user_question: str
+
+    # ── Plan d'analyse (output du planner_node) ──────────────────────────────
+    # Dict JSON parsé contenant :
+    #   { "analysis_type": "statistical|profiling|trends|kpi|business|mixed",
+    #     "approach": str, "sql_queries": [...], "metrics_to_compute": [...],
+    #     "business_context": str }
+    analysis_plan: Optional[Dict[str, Any]]
+
+    # ── Requêtes SQL planifiées ───────────────────────────────────────────────
+    # Liste de dicts : [{"id": str, "description": str, "sql": str}]
+    # Générée par planner_node si l'agent a une connexion DB.
+    # Vide si l'agent n'a pas de connexion ou si aucune donnée SQL n'est requise.
+    sql_queries: Optional[List[Dict[str, Any]]]
+
+    # ── Résultats des requêtes SQL ────────────────────────────────────────────
+    # Liste de dicts par requête :
+    #   { "query_id": str, "description": str, "sql": str,
+    #     "success": bool, "columns": list, "rows": list,
+    #     "row_count": int, "markdown_table": str, "error": str|None }
+    # Renseigné par sql_executor_node, vide si pas de connexion DB.
+    data_results: Optional[List[Dict[str, Any]]]
+
+    # ── Analyse intermédiaire ────────────────────────────────────────────────
+    # Output brut de analyst_node : analyse statistique/fonctionnelle détaillée
+    # basée sur les données fetched. Utilisé comme input du synthesizer_node.
+    analysis_output: Optional[str]
+
+    # ── Réponse finale ───────────────────────────────────────────────────────
+    # Narrative Markdown avec : résumé exécutif, insights clés, analyse détaillée,
+    # recommandations business, limites et points d'attention.
+    final_answer: Optional[str]
+
+    # ── Contexte de schéma ───────────────────────────────────────────────────
+    # Informations sur les tables et colonnes disponibles dans la DB.
+    # Injecté dans le prompt du planner pour l'aider à écrire du SQL pertinent.
+    # Généré par _auto_schema_context() avant le lancement du graphe.
+    schema_context: Optional[str]
+
+    # ── Identifiants ─────────────────────────────────────────────────────────
+    agent_id: str
+    session_id: str
+
+    # ── Gestion d'erreurs ────────────────────────────────────────────────────
+    last_error: Optional[str]
+
+
 class AnalystState(TypedDict):
     """
     État du graphe analyste ClickHouse/Oracle (analyst_graph.py).

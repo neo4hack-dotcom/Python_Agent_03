@@ -9,6 +9,7 @@ class AgentType(str, Enum):
     ORCHESTRATOR = "orchestrator"
     CLICKHOUSE_ANALYST = "clickhouse_analyst"
     ORACLE_ANALYST = "oracle_analyst"
+    DATA_ANALYST = "data_analyst"
     CUSTOM = "custom"
 
 

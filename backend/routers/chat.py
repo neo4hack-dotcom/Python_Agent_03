@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 from backend.database import db, COLL_AGENTS, COLL_SESSIONS, COLL_MESSAGES
 from backend.graphs.orchestrator_graph import build_orchestrator_graph
 from backend.graphs.analyst_graph import build_analyst_graph
+from backend.graphs.data_analyst_graph import build_data_analyst_graph
 from backend.models.agent import AgentType
 from backend.models.chat import ChatRequest, ChatMessage, ChatSession, MessageRole
 
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/api/chat", tags=["Chat"])
 # Cache compiled graphs (expensive to rebuild each call)
 _orchestrator_graph = None
 _analyst_graph = None
+_data_analyst_graph = None
 
 
 def _get_orchestrator():
@@ -39,6 +41,13 @@ def _get_analyst():
     if _analyst_graph is None:
         _analyst_graph = build_analyst_graph()
     return _analyst_graph
+
+
+def _get_data_analyst():
+    global _data_analyst_graph
+    if _data_analyst_graph is None:
+        _data_analyst_graph = build_data_analyst_graph()
+    return _data_analyst_graph
 
 
 def _get_or_create_session(agent_id: str, session_id: Optional[str]) -> str:
@@ -151,9 +160,69 @@ async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGen
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
+async def _run_data_analyst(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
+    """Runner SSE pour l'agent analyste de données."""
+    graph = _get_data_analyst()
+    config = {"configurable": {"thread_id": session_id}}
+    agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
+
+    # Pré-chargement du schéma de la DB si l'agent a une connexion configurée
+    from backend.graphs.data_analyst_graph import _auto_schema_context
+    schema_context = _auto_schema_context(agent_id, message)
+
+    initial_state = {
+        "messages": [],
+        "user_question": message,
+        "analysis_plan": None,
+        "sql_queries": None,
+        "data_results": None,
+        "analysis_output": None,
+        "final_answer": None,
+        "schema_context": schema_context,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "last_error": None,
+    }
+
+    try:
+        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            msgs = event.get("messages", [])
+            if msgs:
+                last = msgs[-1]
+                if hasattr(last, "content") and last.content:
+                    yield json.dumps({"type": "token", "content": last.content}) + "\n"
+                    await asyncio.sleep(0)
+
+            # Emit data results metadata when SQL is executed
+            data_results = event.get("data_results")
+            if data_results:
+                for r in data_results:
+                    if r.get("success") and r.get("rows"):
+                        yield json.dumps({
+                            "type": "query_result",
+                            "row_count": r.get("row_count", 0),
+                            "columns": r.get("columns", []),
+                            "rows": r.get("rows", []),
+                            "sql": r.get("sql", ""),
+                            "description": r.get("description", ""),
+                            "warning": r.get("warning"),
+                        }) + "\n"
+                        await asyncio.sleep(0)
+
+        final_state = graph.get_state(config)
+        final_answer = final_state.values.get("final_answer", "")
+        if final_answer:
+            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+    except Exception as e:
+        logger.error("Data analyst error: %s", e)
+        yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+
+
 def _get_runner(agent_type: str):
     if agent_type == AgentType.ORCHESTRATOR:
         return _run_orchestrator
+    if agent_type == AgentType.DATA_ANALYST:
+        return _run_data_analyst
     return _run_analyst
 
 
