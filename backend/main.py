@@ -23,6 +23,7 @@ from backend.routers import (
     chat_router,
     llm_config_router,
     export_router,
+    config_router,
 )
 
 logging.basicConfig(
@@ -68,6 +69,7 @@ app.include_router(agents_router)
 app.include_router(connections_router)
 app.include_router(chat_router)
 app.include_router(export_router)
+app.include_router(config_router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

@@ -96,6 +96,19 @@ export async function* streamChat(agentId, sessionId, message) {
   }
 }
 
+// ── Config Export / Import ────────────────────────────────────────────────────
+export const configApi = {
+  export: async (includePasswords = true) => {
+    const resp = await api.get('/config/export', {
+      params: { include_passwords: includePasswords },
+      responseType: 'blob',
+    })
+    return resp.data
+  },
+  import: (bundle, mode = 'merge') =>
+    api.post('/config/import', bundle, { params: { mode } }),
+}
+
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
