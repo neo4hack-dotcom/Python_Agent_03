@@ -88,6 +88,8 @@ RULES:
 - PREFER ACTING OVER ASKING: if a specialist agent exists that can discover the needed information (e.g. clickhouse_analyst can call get_schema / list_tables to explore a table), ALWAYS call that agent first instead of asking the user. Use human_validation ONLY when the action is literally impossible without human input (e.g. the user has not mentioned any table name at all and there is no way to infer it).
 - If the user mentions a table name (even informally), treat it as sufficient to call the SQL analyst — the analyst will discover the schema by itself.
 - If the request requires capabilities not available in any listed agent, use cannot_fulfill immediately.
+- CONTEXT CHAINING (critical): When a multi-step task requires writing SQL results to a file, the file_manager agent AUTOMATICALLY receives the full results of all prior steps as context — you do NOT need to embed the data in the task description. Just describe the file operation clearly: what file to create, what format (CSV/Excel/JSON), what columns to include, and reference "the data from the prior step". Example: if step 1 got product list with avg price, step 2 description should be: "Create a CSV file named 'sommaire.csv' in the working directory. Use the product list with average price per product retrieved in the previous step. Columns: product_name, avg_price. The actual data is available in the context."
+- MULTI-STEP PLANNING: For requests like "get data then create a file / report / chart", always plan as 2+ separate steps: first the data agent (SQL/analyst), then the file/report agent. Never try to do both in one call.
 
 {agents_block}
 
@@ -560,7 +562,7 @@ def _run_report_subtask(agent_id: str, task_description: str, session_context: s
     }
 
 
-def _run_file_manager_subtask(agent_id: str, task_description: str) -> Dict[str, Any]:
+def _run_file_manager_subtask(agent_id: str, task_description: str, prior_context: str = "") -> Dict[str, Any]:
     """
     Exécute le pipeline File Manager pour une sous-tâche de l'orchestrateur.
 
@@ -570,6 +572,8 @@ def _run_file_manager_subtask(agent_id: str, task_description: str) -> Dict[str,
     Args:
         agent_id: ID de l'agent file_manager configuré.
         task_description: Description de l'opération à effectuer.
+        prior_context: Résultats des étapes précédentes (données SQL, etc.) à injecter
+                       dans le prompt pour que le file_manager puisse les utiliser.
 
     Returns:
         Dict avec "success", "result" (narrative Markdown).
@@ -579,9 +583,23 @@ def _run_file_manager_subtask(agent_id: str, task_description: str) -> Dict[str,
     logger.info("Running file manager subtask for agent %s: %s", agent_id, task_description[:100])
     graph = build_file_graph()
     thread_id = f"orch_file_{uuid.uuid4().hex[:8]}"
+
+    # Injecte le contexte des étapes précédentes dans le premier message
+    # pour que le LLM puisse utiliser les données SQL sans les réinventer
+    if prior_context:
+        full_request = (
+            f"## Contexte des étapes précédentes\n\n"
+            f"{prior_context}\n\n"
+            f"---\n\n"
+            f"## Ta tâche\n\n"
+            f"{task_description}"
+        )
+    else:
+        full_request = task_description
+
     state: Dict[str, Any] = {
-        "messages": [HumanMessage(content=task_description)],
-        "user_request": task_description,
+        "messages": [HumanMessage(content=full_request)],
+        "user_request": full_request,
         "final_answer": None,
         "iteration_count": 0,
         "agent_id": agent_id,
@@ -1316,7 +1334,14 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
             }
         else:
             try:
-                subtask_result = _run_file_manager_subtask(agent_id, task["description"])
+                # Passe le contexte des étapes précédentes pour que le file_manager
+                # puisse accéder aux données SQL sans les réinventer
+                prior_context = "\n\n".join(
+                    f"**Étape {r['task_id']} ({r.get('agent_type','?')}) — {r['task_description']}**\n{r['result']}"
+                    for r in state.get("worker_results", [])
+                    if r.get("success")
+                )
+                subtask_result = _run_file_manager_subtask(agent_id, task["description"], prior_context)
                 result_entry = {
                     "task_id": task["id"],
                     "task_description": task["description"],
