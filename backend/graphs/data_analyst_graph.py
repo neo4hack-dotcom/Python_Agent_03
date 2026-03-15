@@ -241,10 +241,10 @@ def _auto_schema_context(agent_id: str, task_description: str = "") -> str:
                 cols = schema_result["columns"]
                 col_names = [c["name"] for c in cols]
                 total = len(col_names)
-                shown = col_names[:35]
+                shown = col_names[:100]
                 names_str = ", ".join(shown)
-                if total > 35:
-                    names_str += f" … (+{total - 35} more)"
+                if total > 100:
+                    names_str += f" … (+{total - 100} more)"
                 meta = schema_result.get("metadata", {})
                 meta_info = ""
                 if meta.get("sorting_key"):
