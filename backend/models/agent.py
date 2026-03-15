@@ -18,6 +18,7 @@ class AgentCreate(BaseModel):
     type: AgentType
     description: Optional[str] = None
     connection_id: Optional[str] = Field(None, description="DB connection to use (for analyst agents)")
+    toolkit_id: Optional[str] = Field(None, description="Toolkit to use for tool selection/customization")
     system_prompt: Optional[str] = None
     max_retries: int = Field(default=3, ge=1, le=10)
     row_limit: int = Field(default=1000, ge=1, le=50000, description="Max rows returned from DB queries")
@@ -28,6 +29,7 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     connection_id: Optional[str] = None
+    toolkit_id: Optional[str] = None
     system_prompt: Optional[str] = None
     max_retries: Optional[int] = None
     row_limit: Optional[int] = None
@@ -41,6 +43,7 @@ class AgentConfig(BaseModel):
     type: AgentType
     description: Optional[str] = None
     connection_id: Optional[str] = None
+    toolkit_id: Optional[str] = Field(None, description="Toolkit to use for tool selection/customization")
     system_prompt: Optional[str] = None
     max_retries: int = 3
     row_limit: int = 1000

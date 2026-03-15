@@ -122,6 +122,7 @@ async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGen
         "schema_context": None,
         "agent_id": agent_id,
         "session_id": session_id,
+        "iteration_count": 0,
     }
 
     try:

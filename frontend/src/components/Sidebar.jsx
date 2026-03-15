@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  Bot, ChevronLeft, ChevronRight, Cpu, Plus, Plug, FolderDown
+  Bot, ChevronLeft, ChevronRight, Cpu, Plus, Plug, FolderDown, Wrench
 } from 'lucide-react'
 import { agentsApi } from '../services/api'
 import ConfigModal from './ConfigModal'
@@ -22,6 +22,7 @@ export default function Sidebar({ open, onToggle }) {
     if (type === 'oracle_analyst') return '🔮'
     return '🤖'
   }
+
 
   return (
     <>
@@ -52,6 +53,11 @@ export default function Sidebar({ open, onToggle }) {
           <NavLink to="/llm-config" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <Cpu size={18} className="nav-item-icon" />
             {open && <span className="nav-item-label">Config LLM</span>}
+          </NavLink>
+
+          <NavLink to="/toolkits" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <Wrench size={18} className="nav-item-icon" />
+            {open && <span className="nav-item-label">Toolkits</span>}
           </NavLink>
 
           {open && agents.length > 0 && (

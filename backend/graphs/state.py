@@ -259,3 +259,10 @@ class AnalystState(TypedDict):
     # `session_id` : ID de session pour le checkpointer LangGraph.
     agent_id: str
     session_id: str
+
+    # ── Compteur d'itérations ReAct ──────────────────────────────────────────
+    # Incrémenté à chaque passage dans `agent_react_node` (graphe ReAct).
+    # Sert de garde anti-boucle : quand iteration_count >= max_iterations,
+    # le graphe sort de la boucle tools ↔ agent même si l'agent veut continuer.
+    # Valeur typique : 0 initialement, limite à 8 iterations (4 cycles agent+tools).
+    iteration_count: int

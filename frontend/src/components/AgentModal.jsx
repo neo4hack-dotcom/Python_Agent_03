@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { X, Save, Bot } from 'lucide-react'
-import { agentsApi } from '../services/api'
+import { agentsApi, toolkitsApi } from '../services/api'
 
 const AGENT_TYPES = [
   { value: 'orchestrator', label: '🎯 Orchestrateur', desc: 'Planifie, route et synthétise via plusieurs agents' },
@@ -45,14 +45,20 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
     type: agent?.type || 'orchestrator',
     description: agent?.description || '',
     connection_id: agent?.connection_id || '',
+    toolkit_id: agent?.toolkit_id || '',
     system_prompt: agent?.system_prompt || DEFAULT_PROMPTS.orchestrator,
     max_retries: agent?.max_retries || 3,
     row_limit: agent?.row_limit || 1000,
     extra_config: agent?.extra_config || {},
   })
+  const [toolkits, setToolkits] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState('basic')
+
+  useEffect(() => {
+    toolkitsApi.list().then(r => setToolkits(r.data)).catch(() => {})
+  }, [])
 
   const handleTypeChange = (type) => {
     setForm((f) => ({
@@ -234,6 +240,37 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
                   <span className="text-sm text-muted">Nombre maximum de lignes retournées par requête</span>
                 </div>
               </div>
+
+              {['clickhouse_analyst', 'oracle_analyst'].includes(form.type) && (
+                <div className="form-group">
+                  <label className="form-label">
+                    Toolkit <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optionnel)</span>
+                  </label>
+                  <p className="text-sm text-muted" style={{ marginBottom: 6 }}>
+                    🔧 Sélectionnez un toolkit pour contrôler quels outils SQL sont disponibles
+                    pour cet agent (activer/désactiver list_tables, get_schema, execute_query, check_query).
+                  </p>
+                  <select
+                    className="select"
+                    value={form.toolkit_id}
+                    onChange={(e) => setForm((f) => ({ ...f, toolkit_id: e.target.value }))}
+                  >
+                    <option value="">-- Toolkit par défaut (tous les outils) --</option>
+                    {toolkits
+                      .filter(tk => tk.db_type === (form.type === 'oracle_analyst' ? 'oracle' : 'clickhouse') || tk.db_type === 'any')
+                      .map(tk => (
+                        <option key={tk.id} value={tk.id}>
+                          {tk.is_default ? '⚙️ ' : '🔧 '}{tk.name}
+                          {' '}({(tk.tools || []).filter(t => t.enabled).length} outils actifs)
+                        </option>
+                      ))
+                    }
+                  </select>
+                  <a href="/toolkits" style={{ fontSize: 12, marginTop: 4, display: 'inline-block' }}>
+                    Gérer les toolkits →
+                  </a>
+                </div>
+              )}
 
               <div className="card" style={{ background: 'rgba(245,158,11,0.05)', borderColor: 'rgba(245,158,11,0.3)' }}>
                 <p className="text-sm" style={{ color: 'var(--warning)' }}>

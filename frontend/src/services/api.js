@@ -96,6 +96,16 @@ export async function* streamChat(agentId, sessionId, message) {
   }
 }
 
+// ── Toolkits ──────────────────────────────────────────────────────────────────
+export const toolkitsApi = {
+  list: () => api.get('/toolkits'),
+  create: (payload) => api.post('/toolkits', payload),
+  get: (id) => api.get(`/toolkits/${id}`),
+  update: (id, payload) => api.put(`/toolkits/${id}`, payload),
+  delete: (id) => api.delete(`/toolkits/${id}`),
+  getTemplates: () => api.get('/toolkits/templates'),
+}
+
 // ── Config Export / Import ────────────────────────────────────────────────────
 export const configApi = {
   export: async (includePasswords = true) => {

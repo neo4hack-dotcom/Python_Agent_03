@@ -5,6 +5,7 @@ import ChatPage from './pages/ChatPage'
 import AgentsPage from './pages/AgentsPage'
 import ConnectionsPage from './pages/ConnectionsPage'
 import LLMConfigPage from './pages/LLMConfigPage'
+import ToolkitsPage from './pages/ToolkitsPage'
 import './styles/layout.css'
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/llm-config" element={<LLMConfigPage />} />
+            <Route path="/toolkits" element={<ToolkitsPage />} />
           </Routes>
         </div>
       </div>
