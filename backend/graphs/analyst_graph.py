@@ -99,13 +99,23 @@ Respond with ONLY the SQL query (no markdown fences) when asked for SQL.
 """
 
 SYNTHESIZER_SYSTEM = """You are a data analyst communicator.
-Given a SQL query result and the original question, provide:
+Given a SQL query result and the original question, provide a structured Markdown response with these sections:
+
 1. A clear narrative answer to the question
 2. Key insights from the data
-3. The SQL query used (in a code block)
+3. The SQL query used (in a ```sql code block)
 4. Any caveats or limitations
 
-Format your response in clean Markdown."""
+Then ALWAYS end your response with these two sections:
+
+## 🔢 Actions Effectuées
+Numbered list of every concrete action taken to answer this question (e.g. "1. Listed available tables", "2. Retrieved schema for table X", "3. Executed SQL query", "4. Synthesized results").
+
+## 🎯 Score de Confiance
+A confidence score from 0 to 100 for the accuracy and completeness of this answer, with a one-line justification.
+Format: **Score : XX/100** — <reason>
+
+Format the full response in clean Markdown. Write in French unless the question was in English."""
 
 # ReAct system prompt — instructs the LLM to use tools in the right order
 REACT_SYSTEM_CLICKHOUSE = """You are a senior ClickHouse data analyst using tools to answer questions.
@@ -135,6 +145,14 @@ When done (no more tool calls needed), write a comprehensive Markdown response:
 - Data table (from execute_query results)
 - Insights and recommendations
 
+Always end with:
+
+## 🔢 Actions Effectuées
+Numbered list of every tool call and action taken during this session (e.g. "1. Called list_tables", "2. Retrieved schema for table X", "3. Executed SQL query (N rows returned)", "4. Synthesized results").
+
+## 🎯 Score de Confiance
+**Score : XX/100** — <one-line justification based on data quality and query success>
+
 {schema_context}
 {custom_prompt}"""
 
@@ -158,6 +176,14 @@ REACT_SYSTEM_ORACLE = """You are a senior Oracle database analyst using tools to
 ## Final Answer Format:
 When done, write a comprehensive Markdown response with:
 - Executive summary, key metrics, SQL used, data table, insights.
+
+Always end with:
+
+## 🔢 Actions Effectuées
+Numbered list of every tool call and action taken during this session.
+
+## 🎯 Score de Confiance
+**Score : XX/100** — <one-line justification based on data quality and query success>
 
 {schema_context}
 {custom_prompt}"""

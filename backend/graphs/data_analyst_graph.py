@@ -160,6 +160,13 @@ Each recommendation should include: What to do → Why (data evidence) → Expec
 - Caveats about interpretation
 - What additional data would improve this analysis
 
+## 🔢 Actions Effectuées
+Numbered list of every concrete action taken during this analysis (e.g. "1. Analyzed the user question", "2. Planned SQL queries", "3. Executed N SQL queries", "4. Performed statistical analysis", "5. Generated business recommendations").
+
+## 🎯 Score de Confiance
+A confidence score from 0 to 100 reflecting how complete, accurate and data-backed this analysis is.
+Format: **Score : XX/100** — <one-line justification>
+
 Format in clean Markdown. Be specific — always reference actual numbers from the analysis.
 Write in French unless the question was in English.
 """

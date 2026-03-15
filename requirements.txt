@@ -30,7 +30,7 @@ httpx==0.28.1
 aiofiles==24.1.0
 
 # PDF generation
-weasyprint>=62.3
+reportlab>=4.0
 markdown>=3.7
 
 # Utilities

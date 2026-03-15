@@ -135,7 +135,16 @@ structured final answer for the user. Be comprehensive but concise.
 Format your answer in Markdown with clear sections.
 
 IMPORTANT: The worker results contain REAL data fetched from databases. Present this real data
-accurately — do NOT replace data with placeholders or templates."""
+accurately — do NOT replace data with placeholders or templates.
+
+Always end your response with these two sections:
+
+## 🔢 Actions Effectuées
+Numbered list of every sub-task completed by the orchestrator during this session (derive it from the worker results provided). Example: "1. Analysed table X via ClickHouse agent", "2. Generated business insights via data analyst", "3. Compiled final synthesis".
+
+## 🎯 Score de Confiance
+A global confidence score from 0 to 100 reflecting how reliably this multi-agent workflow answered the user's request.
+Format: **Score : XX/100** — <one-line justification referencing the tasks completed>"""
 # La mention "REAL data" est critique : sans elle, certains LLMs tendent à
 # réécrire les données tabulaires avec des valeurs génériques.
 
