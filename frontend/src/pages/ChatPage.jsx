@@ -14,6 +14,8 @@ import { useToast } from '../components/Toast'
 import DataTable from '../components/DataTable'
 import AgentLogPanel from '../components/AgentLogPanel'
 import DataQualityForm from '../components/DataQualityForm'
+import DataDictionaryForm from '../components/DataDictionaryForm'
+import DataDictionaryResult from '../components/DataDictionaryResult'
 
 // ── Agent type metadata ────────────────────────────────────────────────────────
 const AGENT_META = {
@@ -25,6 +27,7 @@ const AGENT_META = {
   file_manager:      { icon: '🗂️', color: '#0891b2', label: 'Fichiers' },
   powerbi_analyst:   { icon: '📈', color: '#f97316', label: 'Power BI' },
   data_quality:      { icon: '🔍', color: '#10b981', label: 'Data Quality' },
+  data_dictionary:   { icon: '📖', color: '#6366f1', label: 'Data Dictionary' },
   custom:            { icon: '🤖', color: '#64748b', label: 'Custom' },
 }
 
@@ -37,6 +40,7 @@ const WELCOME_HINTS = {
   file_manager: ['Liste les fichiers dans /home/user/data', 'Lis le fichier rapport.csv', 'Crée un dossier "exports" dans /tmp'],
   powerbi_analyst: ['Analyse le dashboard Ventes du rapport Power BI', 'Capture et analyse l\'onglet KPIs du rapport', 'Filtre le rapport sur l\'année 2024 et analyse les tendances'],
   data_quality: [],
+  data_dictionary: [],
 }
 
 // ── Copy button for code blocks ────────────────────────────────────────────────
@@ -172,6 +176,7 @@ function MessageBubble({ message, onExport, agentMeta }) {
   const hasSql = message.metadata?.sql
   const hasPdf = message.metadata?.pdf_ready
   const screenshots = message.metadata?.screenshots || []
+  const hasDictionary = message.metadata?.dictionary?.length > 0
   const [showTable, setShowTable] = useState(false)
   const [hover, setHover] = useState(false)
 
@@ -355,6 +360,11 @@ function MessageBubble({ message, onExport, agentMeta }) {
               </div>
             ))}
           </div>
+        )}
+
+        {/* Data Dictionary result */}
+        {hasDictionary && !isUser && (
+          <DataDictionaryResult dictionary={message.metadata.dictionary} />
         )}
 
         {/* PDF download */}
@@ -663,11 +673,17 @@ export default function ChatPage() {
               ? { ...m, metadata: { ...m.metadata, screenshots: [...(m.metadata.screenshots || []), event] } }
               : m
           ))
-        } else if (event.type === 'dq_progress') {
-          // Show progress step as a subtle status line during DQ analysis
+        } else if (event.type === 'dq_progress' || event.type === 'dd_progress') {
+          // Progress indicator for DQ/DD analysis
           setMessages(prev => prev.map(m =>
             m.id === 'streaming'
               ? { ...m, content: event.content, streaming: true }
+              : m
+          ))
+        } else if (event.type === 'dd_result') {
+          setMessages(prev => prev.map(m =>
+            m.id === 'streaming'
+              ? { ...m, metadata: { ...m.metadata, dictionary: event.dictionary } }
               : m
           ))
         } else if (event.type === 'human_validation') {
@@ -998,7 +1014,16 @@ export default function ChatPage() {
                   />
                 </div>
               )}
-              {selectedAgent?.type !== 'data_quality' && <div style={{
+              {selectedAgent?.type === 'data_dictionary' && (
+                <div style={{ marginBottom: 8 }}>
+                  <DataDictionaryForm
+                    agent={selectedAgent}
+                    onSubmit={(jsonMsg) => handleSend(jsonMsg)}
+                    disabled={sending}
+                  />
+                </div>
+              )}
+              {!['data_quality', 'data_dictionary'].includes(selectedAgent?.type) && <div style={{
                 display: 'flex', gap: 10, alignItems: 'flex-end',
                 background: 'var(--bg-card)',
                 border: `1px solid ${sending ? 'var(--accent)' : 'var(--border)'}`,

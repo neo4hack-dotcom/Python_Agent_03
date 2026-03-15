@@ -18,6 +18,7 @@ from backend.graphs.orchestrator_graph import build_orchestrator_graph
 from backend.graphs.analyst_graph import build_analyst_graph
 from backend.graphs.data_analyst_graph import build_data_analyst_graph
 from backend.graphs.data_quality_graph import build_data_quality_graph
+from backend.graphs.data_dictionary_graph import build_data_dictionary_graph
 from backend.graphs.report_graph import build_report_graph
 from backend.graphs.file_graph import build_file_graph
 from backend.graphs.powerbi_graph import build_powerbi_graph
@@ -32,6 +33,7 @@ _orchestrator_graph = None
 _analyst_graph = None
 _data_analyst_graph = None
 _data_quality_graph = None
+_data_dictionary_graph = None
 _report_graph = None
 _file_graph = None
 _powerbi_graph = None
@@ -49,6 +51,13 @@ def _get_data_quality():
     if _data_quality_graph is None:
         _data_quality_graph = build_data_quality_graph()
     return _data_quality_graph
+
+
+def _get_data_dictionary():
+    global _data_dictionary_graph
+    if _data_dictionary_graph is None:
+        _data_dictionary_graph = build_data_dictionary_graph()
+    return _data_dictionary_graph
 
 
 def _get_file_agent():
@@ -549,6 +558,60 @@ async def _run_data_quality(agent_id: str, session_id: str, message: str) -> Asy
         yield _json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
+async def _run_data_dictionary(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
+    """Runner SSE pour l'agent Data Dictionary."""
+    import json as _json
+
+    graph = _get_data_dictionary()
+    config = {"configurable": {"thread_id": session_id}}
+
+    try:
+        params = _json.loads(message)
+    except Exception:
+        yield _json.dumps({"type": "error", "content": "Message invalide : JSON attendu du formulaire Data Dictionary."}) + "\n"
+        return
+
+    initial_state = {
+        "messages": [HumanMessage(content=message)],
+        "tables": params.get("tables", []),
+        "sample_rows": max(1, min(20, params.get("sample_rows", 5))),
+        "language": params.get("language", "fr"),
+        "db_type": "clickhouse",
+        "discovered_tables": [],
+        "table_schemas": None,
+        "dictionary": None,
+        "final_answer": None,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "last_error": None,
+    }
+
+    try:
+        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            msgs = event.get("messages", [])
+            if msgs:
+                last = msgs[-1]
+                if hasattr(last, "content") and last.content and "[DD]" in last.content:
+                    yield _json.dumps({"type": "dd_progress", "content": last.content}) + "\n"
+                    await asyncio.sleep(0)
+
+        final_state = graph.get_state(config)
+        vals = final_state.values
+        if vals.get("last_error"):
+            yield _json.dumps({"type": "error", "content": vals["last_error"]}) + "\n"
+            return
+        # Emit the full dictionary JSON for frontend rendering
+        dictionary = vals.get("dictionary")
+        if dictionary:
+            yield _json.dumps({"type": "dd_result", "dictionary": dictionary}) + "\n"
+        final_answer = vals.get("final_answer", "")
+        if final_answer:
+            yield _json.dumps({"type": "final", "content": final_answer}) + "\n"
+    except Exception as e:
+        logger.error("Data dictionary agent error: %s", e)
+        yield _json.dumps({"type": "error", "content": str(e)}) + "\n"
+
+
 def _get_runner(agent_type: str):
     if agent_type == AgentType.ORCHESTRATOR:
         return _run_orchestrator
@@ -556,6 +619,8 @@ def _get_runner(agent_type: str):
         return _run_data_analyst
     if agent_type == AgentType.DATA_QUALITY:
         return _run_data_quality
+    if agent_type == AgentType.DATA_DICTIONARY:
+        return _run_data_dictionary
     if agent_type == AgentType.REPORT_WRITER:
         return _run_report
     if agent_type == AgentType.FILE_MANAGER:

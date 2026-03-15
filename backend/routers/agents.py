@@ -34,6 +34,11 @@ DEFAULT_PROMPTS = {
         "Transform analysis results into comprehensive, well-structured PDF reports "
         "with executive summary, methodology, findings, and actionable recommendations."
     ),
+    "data_dictionary": (
+        "Tu es un senior data engineer expert en documentation de bases de données. "
+        "Tu analyses le schéma et les données de tables ClickHouse/Oracle pour produire "
+        "un dictionnaire de données métier structuré : descriptions, formats, valeurs possibles."
+    ),
     "data_quality": (
         "Tu es un expert Data Quality et Data Engineering. Tu analyses les statistiques de profiling "
         "de colonnes de bases de données pour identifier des anomalies : nulls, formats incohérents, "

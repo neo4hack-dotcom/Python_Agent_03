@@ -326,6 +326,31 @@ class PowerBIAgentState(TypedDict):
     session_id: str
 
 
+class DataDictionaryState(TypedDict):
+    """
+    État du graphe Data Dictionary (data_dictionary_graph.py).
+
+    Pipeline linéaire : discover_tables → fetch_schemas → llm_doc → synthesizer
+    Produit un dictionnaire de données métier (description, format, valeurs possibles).
+    """
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    # Input params
+    tables: List[str]          # vide = auto-découverte
+    sample_rows: int            # 1-20
+    language: str               # "fr" ou "en"
+    db_type: str
+    # Intermédiaires
+    discovered_tables: List[str]
+    table_schemas: Optional[Dict[str, Any]]    # {table: {columns, sample, error}}
+    # Sortie
+    dictionary: Optional[List[Dict[str, Any]]] # [{table, table_description, columns}]
+    final_answer: Optional[str]
+    # Infra
+    agent_id: str
+    session_id: str
+    last_error: Optional[str]
+
+
 class DataQualityState(TypedDict):
     """
     État du graphe Data Quality (data_quality_graph.py).

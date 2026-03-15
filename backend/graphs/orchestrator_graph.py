@@ -707,7 +707,7 @@ def _run_data_quality_subtask(agent_id: str, task_description: str, session_id: 
 def _build_agents_block() -> str:
     """Charge tous les agents spécialistes actifs et les formate pour les prompts LLM."""
     _specialist_types = (
-        "clickhouse_analyst", "oracle_analyst", "data_analyst", "data_quality",
+        "clickhouse_analyst", "oracle_analyst", "data_analyst", "data_quality", "data_dictionary",
         "file_manager", "powerbi_analyst", "report_writer",
     )
     all_specialists = [
@@ -916,7 +916,7 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
 
     # Charge tous les agents spécialistes actifs (tous types sauf orchestrator/custom)
     _specialist_types = (
-        "clickhouse_analyst", "oracle_analyst", "data_analyst", "data_quality",
+        "clickhouse_analyst", "oracle_analyst", "data_analyst", "data_quality", "data_dictionary",
         "file_manager", "powerbi_analyst", "report_writer",
     )
     all_specialists = [

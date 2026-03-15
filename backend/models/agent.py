@@ -14,6 +14,7 @@ class AgentType(str, Enum):
     FILE_MANAGER = "file_manager"
     POWERBI_ANALYST = "powerbi_analyst"
     DATA_QUALITY = "data_quality"
+    DATA_DICTIONARY = "data_dictionary"
     CUSTOM = "custom"
 
 

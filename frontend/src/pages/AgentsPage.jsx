@@ -14,6 +14,7 @@ const TYPE_LABELS = {
   file_manager:       { label: 'Gest. Fichiers',      icon: '🗂️', css: 'agent-icon-file',           color: '#0891b2' },
   powerbi_analyst:    { label: 'Analyste Power BI',   icon: '📈', css: 'agent-icon-powerbi',        color: '#f97316' },
   data_quality:       { label: 'Data Quality',         icon: '🔍', css: 'agent-icon-data-quality',   color: '#10b981' },
+  data_dictionary:    { label: 'Data Dictionary',      icon: '📖', css: 'agent-icon-data-dict',       color: '#6366f1' },
   custom:             { label: 'Personnalisé',         icon: '🤖', css: 'agent-icon-custom',         color: '#64748b' },
 }
 

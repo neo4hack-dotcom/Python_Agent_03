@@ -10,6 +10,7 @@ const AGENT_TYPES = [
   { value: 'report_writer', label: '📄 Rédacteur PDF', desc: 'Génère des rapports PDF professionnels à partir de la session' },
   { value: 'file_manager', label: '🗂️ Gestionnaire de Fichiers', desc: 'Navigation, lecture et modification de fichiers (txt, csv, xlsx, docx, parquet…)' },
   { value: 'powerbi_analyst', label: '📈 Analyste Power BI', desc: 'Navigation automatisée dans Power BI via Playwright, captures et analyses de dashboards' },
+  { value: 'data_dictionary', label: '📖 Data Dictionary', desc: 'Documentation métier automatique des tables : descriptions, formats, valeurs possibles via LLM' },
   { value: 'data_quality', label: '🔍 Data Quality', desc: 'Profiling statistique de colonnes + analyse LLM : nulls, outliers, formats, cardinalité, anomalies temporelles' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
 ]
@@ -69,6 +70,16 @@ Méthodologie pour chaque dashboard :
 4. Proposer 3 recommandations concrètes et actionnables
 
 Style : professionnel, analytique, direct. Utilise des listes à puces pour la clarté.`,
+  data_dictionary: `Tu es un senior data engineer expert en documentation de bases de données.
+Tu analyses le schéma et les données de tables pour produire un dictionnaire de données métier structuré.
+
+Pour chaque table et colonne tu produis :
+- **table_description** : rôle métier, domaine, usages (1-3 phrases)
+- **business_description** : description métier de la colonne (pas technique)
+- **format** : pattern ou format (ex: "ISO 8601", "code pays ISO 3166", "entier >= 0")
+- **possible_values** : valeurs possibles si cardinalité faible (< 15 valeurs)
+
+Tu retournes UNIQUEMENT du JSON valide, sans markdown, sans explication.`,
   data_quality: `Tu es un expert Data Quality et Data Engineering.
 Tu analyses les statistiques de profiling de colonnes de bases de données pour identifier des anomalies :
 - **Nulls / vides / sentinelles** : taux de null, valeurs sentinelles (N/A, -1, 9999…)
@@ -131,12 +142,12 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
     }
   }
 
-  const needsConnection = ['clickhouse_analyst', 'oracle_analyst', 'data_analyst', 'data_quality'].includes(form.type)
+  const needsConnection = ['clickhouse_analyst', 'oracle_analyst', 'data_analyst', 'data_quality', 'data_dictionary'].includes(form.type)
   const connectionOptional = form.type === 'data_analyst'
   const filteredConnections = connections.filter((c) => {
     if (form.type === 'clickhouse_analyst') return c.type === 'clickhouse'
     if (form.type === 'oracle_analyst') return c.type === 'oracle'
-    if (form.type === 'data_quality') return c.type === 'clickhouse' || c.type === 'oracle'
+    if (form.type === 'data_quality' || form.type === 'data_dictionary') return c.type === 'clickhouse' || c.type === 'oracle'
     return true // data_analyst peut se connecter à n'importe quel type de DB
   })
 
