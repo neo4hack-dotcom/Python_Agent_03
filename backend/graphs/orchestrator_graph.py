@@ -98,7 +98,7 @@ IMPORTANT RULES:
 - ALWAYS add a FINAL task with agent_type = "report_writer" when the user mentions PDF, rapport, report, document, synthesis, résumé, compte-rendu, or professional output — even if they only hint at it. This task MUST come last, depend on all prior analysis tasks, and clearly describe generating a PDF summarizing all results.
 - For file system operations (read, write, list, search files/directories), use agent_type = "file_manager" with the appropriate file_manager agent_id.
 - For Power BI dashboard navigation, screenshot capture and BI analysis, use agent_type = "powerbi_analyst" with the appropriate powerbi_analyst agent_id.
-- If NO available agent can handle a required sub-task, use agent_type = "orchestrator" with agent_id = null (generic LLM fallback).
+- If NO available agent can handle a required sub-task, use agent_type = "cannot_fulfill" with agent_id = null. The description should briefly explain what was requested but cannot be done (e.g. "The user asked for X but no agent is configured to handle it"). Do NOT attempt to answer the question yourself — the system will reply honestly to the user.
 
 {agents_block}
 
@@ -866,6 +866,33 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
         return {"worker_results": state.get("worker_results", [])}
 
     agent_type = task.get("agent_type", "orchestrator")
+
+    # ── Chemin 0 : tâche non réalisable (aucun agent disponible) ─────────────
+    # Le planificateur utilise ce type quand il ne trouve aucun agent capable
+    # de traiter la sous-tâche. On retourne un message clair sans appeler le LLM
+    # pour éviter toute hallucination.
+    if agent_type == "cannot_fulfill":
+        reason = task.get("description", "Cette action n'est pas prise en charge par les agents disponibles.")
+        result_entry = {
+            "task_id": task["id"],
+            "task_description": task["description"],
+            "agent_type": agent_type,
+            "agent_id": None,
+            "agent_name": "Orchestrateur",
+            "result": (
+                f"⚠️ Je ne suis pas en mesure de répondre à cette demande : "
+                f"aucun agent configuré ne peut traiter ce type de tâche.\n\n"
+                f"**Détail :** {reason}"
+            ),
+            "success": False,
+            "error": "cannot_fulfill: no matching agent available",
+        }
+        updated_results = state.get("worker_results", []) + [result_entry]
+        return {
+            "worker_results": updated_results,
+            "messages": [AIMessage(content=f"Task '{task['id']}' cannot be fulfilled — no matching agent.")],
+            "last_error": result_entry["error"],
+        }
 
     # ── Chemin A1 : délégation au pipeline data analyst (analyse + business) ─
     if agent_type == "data_analyst":
