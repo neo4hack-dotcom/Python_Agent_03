@@ -23,6 +23,8 @@ export default function Sidebar({ open, onToggle }) {
     if (type === 'report_writer') return '📄'
     if (type === 'file_manager') return '🗂️'
     if (type === 'powerbi_analyst') return '📈'
+    if (type === 'web_scraper') return '🌐'
+    if (type === 'chart_presenter') return '📊'
     return '🤖'
   }
 

@@ -379,6 +379,36 @@ class DataQualityState(TypedDict):
     last_error: Optional[str]
 
 
+class WebScraperState(TypedDict):
+    """
+    État du graphe Web Scraper (web_scraper_graph.py).
+
+    Agent ReAct qui navigue sur des pages web via Playwright,
+    extrait des données structurées et les analyse.
+    """
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    user_request: str
+    final_answer: Optional[str]
+    iteration_count: int
+    agent_id: str
+    session_id: str
+
+
+class ChartPresenterState(TypedDict):
+    """
+    État du graphe Charts & Presentations (chart_graph.py).
+
+    Agent ReAct qui génère des graphiques matplotlib et des présentations
+    PowerPoint à partir de données quantitatives/qualitatives.
+    """
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    user_request: str
+    final_answer: Optional[str]
+    iteration_count: int
+    agent_id: str
+    session_id: str
+
+
 class ReportState(TypedDict):
     """
     État du graphe Rédacteur de Rapports (report_graph.py).

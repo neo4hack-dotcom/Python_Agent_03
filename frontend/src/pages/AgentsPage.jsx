@@ -15,6 +15,8 @@ const TYPE_LABELS = {
   powerbi_analyst:    { label: 'Analyste Power BI',   icon: '📈', css: 'agent-icon-powerbi',        color: '#f97316' },
   data_quality:       { label: 'Data Quality',         icon: '🔍', css: 'agent-icon-data-quality',   color: '#10b981' },
   data_dictionary:    { label: 'Data Dictionary',      icon: '📖', css: 'agent-icon-data-dict',       color: '#6366f1' },
+  web_scraper:        { label: 'Web Scraper',           icon: '🌐', css: 'agent-icon-web-scraper',     color: '#06b6d4' },
+  chart_presenter:    { label: 'Charts & Prez',         icon: '📊', css: 'agent-icon-charts',          color: '#a855f7' },
   custom:             { label: 'Personnalisé',         icon: '🤖', css: 'agent-icon-custom',         color: '#64748b' },
 }
 

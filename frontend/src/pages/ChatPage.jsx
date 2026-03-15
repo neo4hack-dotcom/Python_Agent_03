@@ -28,6 +28,8 @@ const AGENT_META = {
   powerbi_analyst:   { icon: '📈', color: '#f97316', label: 'Power BI' },
   data_quality:      { icon: '🔍', color: '#10b981', label: 'Data Quality' },
   data_dictionary:   { icon: '📖', color: '#6366f1', label: 'Data Dictionary' },
+  web_scraper:       { icon: '🌐', color: '#06b6d4', label: 'Web Scraper' },
+  chart_presenter:   { icon: '📊', color: '#a855f7', label: 'Charts & Prez' },
   custom:            { icon: '🤖', color: '#64748b', label: 'Custom' },
 }
 
@@ -41,6 +43,16 @@ const WELCOME_HINTS = {
   powerbi_analyst: ['Analyse le dashboard Ventes du rapport Power BI', 'Capture et analyse l\'onglet KPIs du rapport', 'Filtre le rapport sur l\'année 2024 et analyse les tendances'],
   data_quality: [],
   data_dictionary: [],
+  web_scraper: [
+    'Navigue sur https://example.com et extrais le contenu principal',
+    'Va sur la page produit et récupère les prix dans un JSON',
+    'Extrais tous les liens de la page et filtre ceux contenant "news"',
+  ],
+  chart_presenter: [
+    'Génère un bar chart et un line chart à partir de ces données : Produit,CA\nPommes,1200\nBananes,800\nCerises,2100',
+    'Crée une présentation complète avec ces données de ventes trimestrielles',
+    'Fais un dashboard avec pie chart de répartition et line chart de tendance',
+  ],
 }
 
 // ── Copy button for code blocks ────────────────────────────────────────────────
@@ -176,6 +188,8 @@ function MessageBubble({ message, onExport, agentMeta }) {
   const hasSql = message.metadata?.sql
   const hasPdf = message.metadata?.pdf_ready
   const screenshots = message.metadata?.screenshots || []
+  const charts = message.metadata?.charts || []
+  const presentation = message.metadata?.presentation
   const hasDictionary = message.metadata?.dictionary?.length > 0
   const [showTable, setShowTable] = useState(false)
   const [hover, setHover] = useState(false)
@@ -359,6 +373,66 @@ function MessageBubble({ message, onExport, agentMeta }) {
                 />
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Charts */}
+        {charts.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {charts.map((c, i) => (
+              <div key={i} style={{
+                borderRadius: 8, overflow: 'hidden',
+                border: '1px solid rgba(168,85,247,0.3)',
+                background: 'rgba(168,85,247,0.04)',
+              }}>
+                <div style={{
+                  padding: '5px 12px', fontSize: 11, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  color: '#a855f7', borderBottom: '1px solid rgba(168,85,247,0.2)',
+                }}>
+                  <span>📊 Graphique — {c.filename}</span>
+                  <a
+                    href={c.chart_url}
+                    download={c.filename}
+                    style={{ color: '#a855f7', fontSize: 10, textDecoration: 'underline' }}
+                  >
+                    ↓ télécharger
+                  </a>
+                </div>
+                <img
+                  src={c.chart_url}
+                  alt={c.filename}
+                  style={{ width: '100%', display: 'block', maxHeight: 520, objectFit: 'contain', background: '#1e2130' }}
+                  onError={(e) => { e.target.style.display = 'none' }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Presentation download */}
+        {presentation && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            background: 'rgba(168,85,247,0.08)',
+            border: '1px solid rgba(168,85,247,0.3)',
+            borderRadius: 8, padding: '10px 14px',
+          }}>
+            <span style={{ fontSize: 20 }}>📑</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, color: '#e2e8f0' }}>Présentation générée</div>
+              <div style={{ fontSize: 11, color: '#94a3b8' }}>{presentation.filename}</div>
+            </div>
+            <a
+              href={presentation.download_url}
+              download={presentation.filename}
+              style={{
+                padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                background: '#a855f7', color: 'white', textDecoration: 'none',
+              }}
+            >
+              ↓ Télécharger PPTX
+            </a>
           </div>
         )}
 
@@ -671,6 +745,18 @@ export default function ChatPage() {
           setMessages(prev => prev.map(m =>
             m.id === 'streaming'
               ? { ...m, metadata: { ...m.metadata, screenshots: [...(m.metadata.screenshots || []), event] } }
+              : m
+          ))
+        } else if (event.type === 'chart_ready') {
+          setMessages(prev => prev.map(m =>
+            m.id === 'streaming'
+              ? { ...m, metadata: { ...m.metadata, charts: [...(m.metadata.charts || []), event] } }
+              : m
+          ))
+        } else if (event.type === 'presentation_ready') {
+          setMessages(prev => prev.map(m =>
+            m.id === 'streaming'
+              ? { ...m, metadata: { ...m.metadata, presentation: event } }
               : m
           ))
         } else if (event.type === 'dq_progress' || event.type === 'dd_progress') {

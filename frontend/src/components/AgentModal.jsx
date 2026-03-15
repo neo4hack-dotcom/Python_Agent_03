@@ -12,6 +12,8 @@ const AGENT_TYPES = [
   { value: 'powerbi_analyst', label: '📈 Analyste Power BI', desc: 'Navigation automatisée dans Power BI via Playwright, captures et analyses de dashboards' },
   { value: 'data_dictionary', label: '📖 Data Dictionary', desc: 'Documentation métier automatique des tables : descriptions, formats, valeurs possibles via LLM' },
   { value: 'data_quality', label: '🔍 Data Quality', desc: 'Profiling statistique de colonnes + analyse LLM : nulls, outliers, formats, cardinalité, anomalies temporelles' },
+  { value: 'web_scraper', label: '🌐 Web Scraper', desc: 'Navigation et extraction de données sur des pages web via Playwright — scraping ciblé par sélecteurs CSS' },
+  { value: 'chart_presenter', label: '📊 Charts & Présentations', desc: 'Génère des graphiques (bar, line, pie, scatter, heatmap) et des présentations PowerPoint professionnelles' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
 ]
 
@@ -90,6 +92,14 @@ Tu analyses les statistiques de profiling de colonnes de bases de données pour 
 - **Anomalies temporelles** : dates futures, epoch (1970), pré-1900
 
 Tu produis des rapports structurés avec score de qualité (0-100) et recommandations priorisées.`,
+  web_scraper: `Tu es un expert Web Scraper & Data Extraction Analyst.
+Tu navigues sur des pages web via un navigateur automatisé (Playwright) pour extraire des données ciblées.
+Tu utilises des sélecteurs CSS pour cibler des éléments précis et extrais des tableaux, listes et textes.
+Tu sauvegardes les données extraites en JSON/CSV et prends des screenshots pour documenter.`,
+  chart_presenter: `Tu es un expert en Visualisation de Données & Présentations Professionnelles.
+Tu transformes des données brutes en graphiques percutants et présentations PowerPoint complètes.
+Tu choisis le bon type de graphique (bar, line, pie, scatter, heatmap) selon la nature des données.
+Tu produis des présentations dark/light avec slides de résumé, graphiques, tableaux et recommandations.`,
   custom: `Tu es un assistant IA expert. Réponds de façon précise et structurée.`,
 }
 
@@ -366,6 +376,80 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
                     />
                   </div>
                 </>
+              )}
+
+              {form.type === 'web_scraper' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">URLs autorisées <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(une par ligne, optionnel)</span></label>
+                    <textarea
+                      className="textarea"
+                      placeholder={"Ex:\nhttps://example.com\n*.wikipedia.org\nhttps://data.gouv.fr/datasets"}
+                      value={(form.extra_config?.allowed_urls || []).join('\n')}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        extra_config: {
+                          ...f.extra_config,
+                          allowed_urls: e.target.value.split('\n').map(u => u.trim()).filter(Boolean)
+                        }
+                      }))}
+                      rows={4}
+                    />
+                    <span className="text-sm text-muted">
+                      Si renseigné, l'agent ne pourra naviguer que sur ces URLs/domaines. Laisser vide pour autoriser toutes les URLs (non recommandé en production).
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={form.extra_config?.headless !== false}
+                        onChange={(e) => setForm((f) => ({
+                          ...f,
+                          extra_config: { ...f.extra_config, headless: e.target.checked }
+                        }))}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      Mode headless (navigateur invisible)
+                    </label>
+                    <span className="text-sm text-muted">
+                      Décocher pour voir le navigateur pendant le scraping (utile pour déboguer).
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Répertoire des screenshots <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optionnel)</span></label>
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Ex: data/web_scraper_screenshots"
+                      value={form.extra_config?.screenshots_dir || ''}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        extra_config: { ...f.extra_config, screenshots_dir: e.target.value }
+                      }))}
+                    />
+                  </div>
+                </>
+              )}
+
+              {form.type === 'chart_presenter' && (
+                <div className="form-group">
+                  <label className="form-label">Thème par défaut</label>
+                  <select
+                    className="select"
+                    value={form.extra_config?.default_theme || 'dark'}
+                    onChange={(e) => setForm((f) => ({
+                      ...f,
+                      extra_config: { ...f.extra_config, default_theme: e.target.value }
+                    }))}
+                  >
+                    <option value="dark">🌙 Dark (professionnel, recommandé)</option>
+                    <option value="light">☀️ Light (classique, blanc)</option>
+                  </select>
+                  <span className="text-sm text-muted">
+                    Thème par défaut pour les graphiques et les présentations générés par cet agent.
+                  </span>
+                </div>
               )}
 
               {form.type === 'orchestrator' && (

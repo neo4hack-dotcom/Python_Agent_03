@@ -28,6 +28,7 @@ from backend.routers import (
     report_router,
     powerbi_router,
     scheduler_router,
+    charts_router,
 )
 from backend.services.scheduler_service import scheduler_service
 
@@ -90,6 +91,7 @@ app.include_router(toolkits_router)
 app.include_router(report_router)
 app.include_router(powerbi_router)
 app.include_router(scheduler_router)
+app.include_router(charts_router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

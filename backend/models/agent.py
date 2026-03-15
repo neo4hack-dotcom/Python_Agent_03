@@ -15,6 +15,8 @@ class AgentType(str, Enum):
     POWERBI_ANALYST = "powerbi_analyst"
     DATA_QUALITY = "data_quality"
     DATA_DICTIONARY = "data_dictionary"
+    WEB_SCRAPER = "web_scraper"
+    CHART_PRESENTER = "chart_presenter"
     CUSTOM = "custom"
 
 
