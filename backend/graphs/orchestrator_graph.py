@@ -1,38 +1,27 @@
 """
-Graphe LangGraph Orchestrateur (orchestrator_graph.py)
-=======================================================
-Workflow multi-agents capable de décomposer une requête complexe en sous-tâches,
-d'en déléguer l'exécution à des agents spécialistes (ClickHouse, Oracle…) et de
-synthétiser les résultats en une réponse finale cohérente.
+Graphe LangGraph Orchestrateur — Architecture ReAct (orchestrator_graph.py)
+============================================================================
+Workflow multi-agents suivant le pattern ReAct (Reasoning + Acting) :
+le raisonneur LLM est appelé à chaque itération pour décider de la prochaine
+action en s'appuyant sur toutes les observations accumulées.
 
-Architecture du graphe :
-------------------------
-                         ┌──────────────┐
-                   START ─► planner_node  │  ← décompose la requête en sous-tâches
-                         └──────┬───────┘
-                                │
-                    ┌───────────▼──────────┐
-                    │ task_dispatcher_node  │  ← choisit la prochaine tâche
-                    └───────────┬──────────┘
-                                │
-            ┌───────────────────┼────────────────────┐
-            │ human approval    │ tâche dispo          │ plus de tâche / limite iter.
-     ┌──────▼──────┐    ┌──────▼──────┐       ┌──────▼──────┐
-     │human_feedback│    │ worker_node │       │synthesizer  │
-     │    _node    │    └──────┬──────┘       │    _node    │
-     └──────┬──────┘           │               └──────┬──────┘
-            │           ┌──────┴──────┐               │
-            └──────────►│   succès ?  │               │
-                        └──────┬──────┘               │
-                 ┌─────────────┼──────────────┐        │
-          erreur │       toutes│ tâches        │succès  │
-         + retry │       faites│               │        │
-        ┌────────▼──────┐     └───────────────┘        │
-        │corrector_node │                               │
-        └────────┬──────┘                               │
-                 └─────── (retour à worker_node)        │
-                                                        │
-                                             END ◄──────┘
+Architecture du graphe (ReAct loop) :
+--------------------------------------
+
+                    ┌─────────────────┐
+              START ─►  reasoner_node  │  ← Thought : raisonne sur l'état courant
+                    └────────┬────────┘    et choisit la prochaine action
+                             │
+             ┌───────────────┼──────────────────────┐
+             │ call_agent    │ human_validation       │ final_answer / cannot_fulfill
+      ┌──────▼──────┐  ┌─────▼──────┐       ┌────────▼────────┐
+      │ worker_node │  │human_feedback│      │ synthesizer_node │
+      │  (Action)   │  │   _node     │       │  (Final Answer)  │
+      └──────┬──────┘  └──────┬──────┘       └────────┬────────┘
+             │  Observation   │                        │
+             └────────────────┘                        │
+             (retour à reasoner avec nouveau résultat)  │
+                                              END ◄─────┘
 
 Délégation réelle aux agents analystes :
   Quand une tâche a `agent_type = "clickhouse_analyst"` ou `"oracle_analyst"`,
@@ -81,46 +70,65 @@ logger = logging.getLogger(__name__)
 # Les prompts définissent le comportement de chaque nœud LLM.
 # Ils sont tous injectés en tant que SystemMessage (premier message du contexte).
 
-PLANNER_SYSTEM = """You are an expert orchestrator agent. Your job is to:
-1. Read the definitions of ALL available specialist agents listed below (name, type, id, description).
-2. Understand the user's overall objective.
-3. Decompose it into an ordered list of concrete sub-tasks.
-4. For each sub-task, assign an agent ONLY IF at least one available agent's description confirms it can handle that type of task.
-5. Flag any tasks that require human validation before execution.
+REASONER_SYSTEM = """You are an expert orchestrator working in a ReAct (Reason + Act) loop.
 
-IMPORTANT RULES:
-- STEP 1 IS MANDATORY: read every agent's description before planning. Only assign an agent to a task if its description matches the task requirement.
-- For data analysis tasks, use analyst agents (clickhouse_analyst, oracle_analyst, or data_analyst) that are listed below with a matching description.
-- Specify the exact agent_id from the list for every specialist task.
-- NEVER use generic descriptions like "table_name" or placeholders — use the EXACT table names the user mentioned.
-- If no table name is mentioned, ask the user to clarify (add a human_validation task first).
-- Each analyst task must have a concrete, specific description with real table/column names.
-- ALWAYS add a FINAL task with agent_type = "report_writer" when the user mentions PDF, rapport, report, document, synthesis, résumé, compte-rendu, or professional output — even if they only hint at it. This task MUST come last, depend on all prior analysis tasks, and clearly describe generating a PDF summarizing all results.
-- For file system operations (read, write, list, search files/directories), use agent_type = "file_manager" with the appropriate file_manager agent_id.
-- For Power BI dashboard navigation, screenshot capture and BI analysis, use agent_type = "powerbi_analyst" with the appropriate powerbi_analyst agent_id.
-- If NO available agent can handle a required sub-task, use agent_type = "cannot_fulfill" with agent_id = null. The description should briefly explain what was requested but cannot be done (e.g. "The user asked for X but no agent is configured to handle it"). Do NOT attempt to answer the question yourself — the system will reply honestly to the user.
+At each step you receive:
+- The user's original request
+- All available specialist agents with their descriptions
+- All prior observations (results from agents already called)
+
+Your task: THINK about what has been done so far, then decide the single best NEXT action.
+
+RULES:
+- Read every agent's description carefully. Only call an agent if its description confirms it can handle the sub-task.
+- Never hallucinate data — rely only on what specialist agents return.
+- Never call the same agent with the exact same task description twice.
+- If a prior task failed, you may retry once with a better description OR proceed to final_answer using available results.
+- For PDF / rapport / report / document / synthesis requests: call report_writer LAST, after all analysis tasks are complete.
+- For data queries: use the EXACT table/column names the user mentioned. If table names are unclear, use human_validation first.
+- If the request requires capabilities not available in any listed agent, use cannot_fulfill immediately.
 
 {agents_block}
 
-Respond ONLY with a JSON object in this exact format:
+Prior observations (results from agents already called):
+{observations}
+
+Current step: {step_num}
+
+Respond ONLY with a valid JSON object. Choose exactly ONE action:
+
+To call a specialist agent:
 {{
-  "analysis": "<brief analysis of the request>",
-  "tasks": [
-    {{
-      "id": "task_1",
-      "description": "<specific task with exact details>",
-      "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|file_manager|powerbi_analyst|report_writer|orchestrator|human_validation>",
-      "agent_id": "<id from agents_block above, or null only for orchestrator/human_validation tasks>",
-      "priority": 1,
-      "depends_on": [],
-      "requires_human_approval": false
-    }}
-  ]
+  "thought": "<reasoning about what has been done and what the next best action is>",
+  "action": "call_agent",
+  "agent_type": "<type from agents_block>",
+  "agent_id": "<id from agents_block, or null if none match>",
+  "task_id": "step_{step_num}",
+  "description": "<specific, actionable description with exact table/column/file names>"
 }}
-"""
-# Note : `{agents_block}` est remplacé dynamiquement par `planner_node` avec la
-# liste des agents analystes actifs (nom, type, id) lus depuis la base de données.
-# Cela permet au LLM de connaître les agents disponibles au moment de la planification.
+
+When all needed work is done and you can formulate a complete answer:
+{{
+  "thought": "<what was accomplished and why it fully answers the user's request>",
+  "action": "final_answer"
+}}
+
+When you need clarification from the user before proceeding:
+{{
+  "thought": "<what is unclear or requires human input>",
+  "action": "human_validation",
+  "task_id": "human_{step_num}",
+  "description": "<specific question for the user>"
+}}
+
+When the request requires capabilities not available in any listed agent:
+{{
+  "thought": "<what was needed but no agent can provide it>",
+  "action": "cannot_fulfill",
+  "reason": "<clear, honest explanation why this cannot be done with available agents>"
+}}"""
+# Note : {agents_block}, {observations} et {step_num} sont injectés dynamiquement
+# par reasoner_node à chaque itération du loop ReAct.
 
 ROUTER_SYSTEM = """You are a routing agent. Given the current task and available worker results,
 decide the next action:
@@ -633,6 +641,182 @@ def _run_powerbi_subtask(agent_id: str, task_description: str, session_id: str =
 
 # ── Nœuds du graphe orchestrateur ────────────────────────────────────────────
 
+def _build_agents_block() -> str:
+    """Charge tous les agents spécialistes actifs et les formate pour les prompts LLM."""
+    _specialist_types = (
+        "clickhouse_analyst", "oracle_analyst", "data_analyst",
+        "file_manager", "powerbi_analyst", "report_writer",
+    )
+    all_specialists = [
+        a for a in db.get_all(COLL_AGENTS)
+        if a.get("type") in _specialist_types and a.get("is_active", True)
+    ]
+    if not all_specialists:
+        return "No specialist agents configured — use action=cannot_fulfill for data/file/report tasks."
+
+    _categories = {
+        "Data (SQL / analytics)": ("clickhouse_analyst", "oracle_analyst", "data_analyst"),
+        "File management": ("file_manager",),
+        "Power BI / BI dashboards": ("powerbi_analyst",),
+        "Report generation": ("report_writer",),
+    }
+    blocks = []
+    for cat_label, cat_types in _categories.items():
+        agents_in_cat = [a for a in all_specialists if a.get("type") in cat_types]
+        if agents_in_cat:
+            lines = []
+            for a in agents_in_cat:
+                raw_desc = a.get("description") or ""
+                if not raw_desc and a.get("system_prompt"):
+                    raw_desc = a["system_prompt"][:200].replace("\n", " ")
+                desc_part = f'  desc="{raw_desc[:150].strip()}"' if raw_desc else ""
+                lines.append(f"    - name={a['name']}  type={a['type']}  id={a['id']}{desc_part}")
+            blocks.append(f"  [{cat_label}]\n" + "\n".join(lines))
+    return "Available specialist agents (read descriptions before acting):\n" + "\n".join(blocks)
+
+
+def reasoner_node(state: OrchestratorState) -> Dict[str, Any]:
+    """
+    Nœud 1 — Raisonnement ReAct (Thought).
+
+    Rôle :
+        Appelé à chaque itération de la boucle ReAct. Le LLM reçoit :
+          - La requête initiale de l'utilisateur
+          - La liste de tous les agents disponibles (avec descriptions)
+          - Toutes les observations accumulées (résultats des agents précédents)
+
+        Il produit UNE décision parmi :
+          - call_agent  : déléguer la prochaine sous-tâche à un agent spécialiste
+          - final_answer: tout le travail nécessaire est fait, passer à la synthèse
+          - human_validation : besoin de clarification humaine avant de continuer
+          - cannot_fulfill : la demande dépasse les capacités des agents disponibles
+
+    Position dans le workflow :
+        START → reasoner (première itération, pas d'observations)
+        worker → reasoner (itérations suivantes, observations accumulées)
+        human_feedback → reasoner (après clarification humaine)
+
+    Modifications de l'état :
+        - `current_task` : tâche à exécuter (si call_agent) ou None (si final_answer)
+        - `awaiting_human` : True uniquement pour human_validation
+        - `final_answer` : renseigné uniquement pour cannot_fulfill (réponse directe)
+        - `iteration` : incrémenté à chaque appel à call_agent
+        - `messages` : décision du raisonneur
+    """
+    llm = build_llm()
+
+    agents_block = _build_agents_block()
+
+    # Construit le bloc d'observations depuis les résultats des agents précédents
+    results = state.get("worker_results", [])
+    step_num = len(results) + 1
+    if results:
+        obs_parts = []
+        for r in results:
+            status = "✅" if r.get("success") else "❌"
+            excerpt = r["result"][:500] + ("…" if len(r["result"]) > 500 else "")
+            obs_parts.append(
+                f"{status} [{r['task_id']}] {r.get('agent_name', r.get('agent_type', '?'))}"
+                f" — {r['task_description']}\n→ {excerpt}"
+            )
+        observations = "\n\n".join(obs_parts)
+    else:
+        observations = "No prior observations — this is the first step."
+
+    system_content = REASONER_SYSTEM.format(
+        agents_block=agents_block,
+        observations=observations,
+        step_num=step_num,
+    )
+
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(content=f"User request: {state['user_request']}"),
+    ]
+
+    try:
+        response = llm.invoke(messages)
+        raw = response.content.strip()
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw:
+            raw = raw.split("```")[1].split("```")[0].strip()
+
+        decision = json.loads(raw)
+        action = decision.get("action")
+        thought = decision.get("thought", "")
+        logger.info("Reasoner step %d: action=%s | thought: %s", step_num, action, thought[:120])
+
+        if action == "final_answer":
+            return {
+                "current_task": None,
+                "awaiting_human": False,
+                "messages": [AIMessage(content=f"[Reasoner step {step_num}] All work done → synthesizing.")],
+            }
+
+        if action == "cannot_fulfill":
+            reason = decision.get("reason", "No matching agent available.")
+            return {
+                "current_task": None,
+                "awaiting_human": False,
+                "final_answer": (
+                    f"Je ne suis pas en mesure de répondre à cette demande.\n\n"
+                    f"**Raison :** {reason}"
+                ),
+                "messages": [AIMessage(content=f"[Reasoner step {step_num}] Cannot fulfill: {reason}")],
+            }
+
+        if action == "human_validation":
+            task = {
+                "id": decision.get("task_id", f"human_{step_num}"),
+                "description": decision.get("description", ""),
+                "agent_type": "human_validation",
+                "agent_id": None,
+                "priority": step_num,
+                "depends_on": [],
+                "requires_human_approval": True,
+            }
+            return {
+                "current_task": task,
+                "awaiting_human": True,
+                "messages": [AIMessage(content=f"[Reasoner step {step_num}] Human validation needed: {task['description'][:100]}")],
+            }
+
+        if action == "call_agent":
+            task = {
+                "id": decision.get("task_id", f"step_{step_num}"),
+                "description": decision.get("description", ""),
+                "agent_type": decision.get("agent_type", "orchestrator"),
+                "agent_id": decision.get("agent_id"),
+                "priority": step_num,
+                "depends_on": [],
+                "requires_human_approval": False,
+            }
+            return {
+                "current_task": task,
+                "awaiting_human": False,
+                "iteration": state.get("iteration", 0) + 1,
+                "messages": [AIMessage(content=f"[Reasoner step {step_num}] Calling {task['agent_type']}: {task['description'][:100]}")],
+            }
+
+        # Action inconnue → arrêt sécurisé
+        logger.warning("Reasoner returned unknown action '%s' — stopping.", action)
+        return {
+            "current_task": None,
+            "awaiting_human": False,
+            "messages": [AIMessage(content=f"[Reasoner step {step_num}] Unknown action '{action}' — stopping.")],
+        }
+
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error("Reasoner failed to parse LLM response: %s", e)
+        return {
+            "current_task": None,
+            "awaiting_human": False,
+            "messages": [AIMessage(content=f"[Reasoner step {step_num}] Parse error: {e} — stopping.")],
+        }
+
+
+# ── Ancien planner_node (Plan-and-Execute, conservé pour référence) ────────────
 def planner_node(state: OrchestratorState) -> Dict[str, Any]:
     """
     Nœud 1 — Planification et décomposition de la requête.
@@ -1338,29 +1522,33 @@ def human_feedback_node(state: OrchestratorState) -> Dict[str, Any]:
 # une chaîne de caractères correspondant au nom du prochain nœud.
 # Elles sont plus rapides et déterministes que de demander au LLM de router.
 
-def route_after_dispatcher(state: OrchestratorState) -> Literal["worker", "synthesizer", "human_feedback"]:
+def route_after_reasoner(state: OrchestratorState) -> Literal["worker", "synthesizer", "human_feedback"]:
     """
-    Décide la suite après la sélection d'une tâche par le dispatcher.
+    Routage ReAct après chaque décision du raisonneur.
 
-    Priorités de routage :
-      1. "human_feedback" si une approbation humaine est requise.
-      2. "synthesizer" si plus aucune tâche n'est disponible (current_task=None).
-      3. "synthesizer" si la limite max_iterations est atteinte (anti-boucle).
-      4. "worker" sinon.
+    Priorités :
+      1. "synthesizer" si final_answer est déjà renseigné (cannot_fulfill ou
+         action final_answer du raisonneur).
+      2. "human_feedback" si awaiting_human est True.
+      3. "synthesizer" si current_task est None (raisonneur n'a plus d'action)
+         ou si la limite max_iterations est atteinte (anti-boucle infinie).
+      4. "worker" sinon (raisonneur a choisi call_agent).
     """
+    # cannot_fulfill ou erreur de parsing → réponse déjà dans final_answer
+    if state.get("final_answer"):
+        return "synthesizer"
+
     if state.get("awaiting_human"):
         return "human_feedback"
 
     if state.get("current_task") is None:
-        # Backlog épuisé → tous les résultats sont disponibles pour la synthèse
         return "synthesizer"
 
     max_iter = state.get("max_iterations", 10)
-    current_iter = state.get("iteration", 0)
-    if current_iter >= max_iter:
-        logger.info(
-            "Orchestrator hit max_iterations (%d/%d) — forcing synthesizer.",
-            current_iter, max_iter,
+    if state.get("iteration", 0) >= max_iter:
+        logger.warning(
+            "Reasoner hit max_iterations (%d) — forcing synthesizer.",
+            state.get("iteration", 0),
         )
         return "synthesizer"
 
@@ -1469,41 +1657,28 @@ def build_orchestrator_graph():
     """
     builder = StateGraph(OrchestratorState)
 
-    # ── Enregistrement des nœuds ────────────────────────────────────────────
-    builder.add_node("planner", planner_node)              # décomposition
-    builder.add_node("dispatcher", task_dispatcher_node)   # sélection tâche
-    builder.add_node("worker", worker_node)                # exécution (SQL réel ou LLM)
-    builder.add_node("corrector", corrector_node)          # correction avant retry
-    builder.add_node("synthesizer", synthesizer_node)      # synthèse finale
-    builder.add_node("human_feedback", human_feedback_node)  # interruption humaine
+    # ── Enregistrement des nœuds ─────────────────────────────────────────────
+    # Architecture ReAct : START → reasoner ⟷ worker (boucle) → synthesizer
+    builder.add_node("reasoner", reasoner_node)              # Thought : raisonnement
+    builder.add_node("worker", worker_node)                  # Action  : exécution agent
+    builder.add_node("synthesizer", synthesizer_node)        # Final Answer : synthèse
+    builder.add_node("human_feedback", human_feedback_node)  # Interruption humaine
 
-    # ── Edges fixes (toujours suivis) ───────────────────────────────────────
-    builder.add_edge(START, "planner")          # entrée → planification
-    builder.add_edge("planner", "dispatcher")   # planification → sélection
-    builder.add_edge("corrector", "worker")     # correction → retry worker
-    builder.add_edge("human_feedback", "dispatcher")  # validation → suite du backlog
-    builder.add_edge("synthesizer", END)        # synthèse → fin
+    # ── Edges fixes ──────────────────────────────────────────────────────────
+    builder.add_edge(START, "reasoner")          # Entrée → premier Thought
+    builder.add_edge("worker", "reasoner")       # Observation → Thought suivant
+    builder.add_edge("human_feedback", "reasoner")  # Après clarification → Thought
+    builder.add_edge("synthesizer", END)
 
-    # ── Edges conditionnelles (routage dynamique selon l'état) ───────────────
-    # Après la sélection d'une tâche → qui l'exécute ?
+    # ── Edge conditionnelle depuis le raisonneur ──────────────────────────────
+    # Le raisonneur décide : call_agent → worker | final_answer → synthesizer
     builder.add_conditional_edges(
-        "dispatcher",                 # nœud source
-        route_after_dispatcher,       # fonction de décision
+        "reasoner",
+        route_after_reasoner,
         {
             "worker": "worker",
             "synthesizer": "synthesizer",
             "human_feedback": "human_feedback",
-        },
-    )
-
-    # Après l'exécution d'une tâche → que fait-on ensuite ?
-    builder.add_conditional_edges(
-        "worker",                 # nœud source
-        route_after_worker,       # fonction de décision
-        {
-            "dispatcher": "dispatcher",  # prochaine tâche
-            "corrector": "corrector",    # correction avant retry
-            "synthesizer": "synthesizer", # toutes tâches terminées
         },
     )
 
