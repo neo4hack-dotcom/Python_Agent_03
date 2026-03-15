@@ -119,8 +119,10 @@ When you need clarification from the user before proceeding:
   "thought": "<what is unclear or requires human input>",
   "action": "human_validation",
   "task_id": "human_{step_num}",
-  "description": "<specific question for the user>"
+  "description": "<specific question for the user>",
+  "options": ["<choice 1>", "<choice 2>", "<choice 3 if relevant>"]
 }}
+The "options" field is REQUIRED for human_validation. Always provide 2 to 4 short, concrete choices that cover the most likely answers. Add a final option such as "Autre (précisez)" when the list may not be exhaustive.
 
 When the request requires capabilities not available in any listed agent:
 {{
@@ -771,6 +773,7 @@ def reasoner_node(state: OrchestratorState) -> Dict[str, Any]:
             task = {
                 "id": decision.get("task_id", f"human_{step_num}"),
                 "description": decision.get("description", ""),
+                "options": decision.get("options", []),
                 "agent_type": "human_validation",
                 "agent_id": None,
                 "priority": step_num,

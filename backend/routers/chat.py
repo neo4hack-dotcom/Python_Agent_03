@@ -149,6 +149,17 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
 
     try:
         async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            # Pause the stream when the reasoner needs human input
+            if event.get("awaiting_human"):
+                task = event.get("current_task") or {}
+                yield json.dumps({
+                    "type": "human_validation",
+                    "content": task.get("description", ""),
+                    "options": task.get("options", []),
+                }) + "\n"
+                await asyncio.sleep(0)
+                break  # Stop streaming — resume when user replies
+
             msgs = event.get("messages", [])
             if msgs:
                 last = msgs[-1]

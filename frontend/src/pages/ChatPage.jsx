@@ -449,7 +449,11 @@ function WelcomeScreen({ agent, onHintClick }) {
 }
 
 // ── Human validation banner ────────────────────────────────────────────────────
-function HumanValidationBanner({ message, onConfirm, onDismiss }) {
+function HumanValidationBanner({ request, onAnswer, onDismiss }) {
+  const { content, options = [] } = typeof request === 'string'
+    ? { content: request }
+    : request
+
   return (
     <div style={{
       margin: '0 0 8px',
@@ -463,24 +467,43 @@ function HumanValidationBanner({ message, onConfirm, onDismiss }) {
         <AlertTriangle size={16} style={{ color: '#f59e0b', flexShrink: 0, marginTop: 2 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>
-            Confirmation requise
+            Précision nécessaire
           </div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-            {message}
+            {content}
           </div>
         </div>
       </div>
+      {options.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {options.map((opt, i) => (
+            <button
+              key={i}
+              className="btn btn-sm"
+              style={{
+                background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.45)',
+                color: '#f59e0b', fontWeight: 500, fontSize: 12, borderRadius: 6,
+              }}
+              onClick={() => onAnswer(opt)}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button
-          className="btn btn-sm"
-          style={{
-            background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.5)',
-            color: '#f59e0b', fontWeight: 600, fontSize: 12,
-          }}
-          onClick={onConfirm}
-        >
-          ✅ Confirmer
-        </button>
+        {options.length === 0 && (
+          <button
+            className="btn btn-sm"
+            style={{
+              background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.5)',
+              color: '#f59e0b', fontWeight: 600, fontSize: 12,
+            }}
+            onClick={() => onAnswer('oui')}
+          >
+            ✅ Confirmer
+          </button>
+        )}
         <button
           className="btn btn-secondary btn-sm"
           style={{ fontSize: 12 }}
@@ -638,7 +661,7 @@ export default function ChatPage() {
               : m
           ))
         } else if (event.type === 'human_validation') {
-          setHumanValidationRequest(event.content)
+          setHumanValidationRequest({ content: event.content, options: event.options || [] })
         } else if (event.type === 'error') {
           setMessages(prev => prev.map(m =>
             m.id === 'streaming'
@@ -684,8 +707,8 @@ export default function ChatPage() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
   }
 
-  const handleConfirmValidation = () => {
-    handleSend('oui')
+  const handleConfirmValidation = (answer) => {
+    handleSend(typeof answer === 'string' ? answer : 'oui')
   }
 
   const handleExportSession = async () => {
@@ -951,8 +974,8 @@ export default function ChatPage() {
             <>
               {humanValidationRequest && (
                 <HumanValidationBanner
-                  message={humanValidationRequest}
-                  onConfirm={handleConfirmValidation}
+                  request={humanValidationRequest}
+                  onAnswer={handleConfirmValidation}
                   onDismiss={() => setHumanValidationRequest(null)}
                 />
               )}
