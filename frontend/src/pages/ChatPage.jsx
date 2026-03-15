@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   Send, Plus, Trash2, Download, Database, ChevronDown,
   MessageSquare, CheckCircle, FileText, Terminal, Copy, Check,
-  Bot, Sparkles, Clock, AlertTriangle, FolderOpen
+  Bot, Sparkles, Clock, AlertTriangle, FolderOpen, Network,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -16,7 +16,7 @@ import AgentLogPanel from '../components/AgentLogPanel'
 
 // ── Agent type metadata ────────────────────────────────────────────────────────
 const AGENT_META = {
-  orchestrator:      { icon: '🎯', color: '#6366f1', label: 'Orchestrateur' },
+  orchestrator:      { icon: '🌐', color: '#6366f1', label: 'Orchestrateur', isManager: true },
   clickhouse_analyst:{ icon: '📊', color: '#f59e0b', label: 'ClickHouse' },
   oracle_analyst:    { icon: '🔮', color: '#8b5cf6', label: 'Oracle' },
   data_analyst:      { icon: '🧠', color: '#10b981', label: 'Data Analyst' },
@@ -187,22 +187,57 @@ function MessageBubble({ message, onExport, agentMeta }) {
       {/* Avatar */}
       <div style={{
         width: 34, height: 34, borderRadius: 10, flexShrink: 0,
-        background: isUser ? 'var(--accent)' : (agentMeta?.color + '22' || 'var(--bg-hover)'),
-        border: `1px solid ${isUser ? 'transparent' : (agentMeta?.color + '44' || 'var(--border)')}`,
+        background: isUser
+          ? 'var(--accent)'
+          : agentMeta?.isManager
+            ? `linear-gradient(135deg, ${agentMeta.color}44, ${agentMeta.color}22)`
+            : (agentMeta?.color + '22' || 'var(--bg-hover)'),
+        border: `1.5px solid ${isUser ? 'transparent' : (agentMeta?.color + '66' || 'var(--border)')}`,
+        boxShadow: !isUser && agentMeta?.isManager ? `0 0 10px ${agentMeta.color}44` : undefined,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 17,
       }}>
-        {isUser ? '👤' : (agentMeta?.icon || '🤖')}
+        {isUser
+          ? '👤'
+          : agentMeta?.isManager
+            ? <Network size={17} color={agentMeta.color} strokeWidth={2.2} />
+            : (agentMeta?.icon || '🤖')}
       </div>
 
       {/* Content */}
-      <div style={{ maxWidth: '76%', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ maxWidth: '76%', display: 'flex', flexDirection: 'column', gap: 4 }}>
+
+        {/* Sender label (agent type) */}
+        {!isUser && agentMeta && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em',
+            color: agentMeta.color, marginBottom: 1,
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: agentMeta.color, flexShrink: 0,
+            }} />
+            {agentMeta.label.toUpperCase()}
+            {agentMeta.isManager && (
+              <span style={{
+                fontSize: 8.5, fontWeight: 800, letterSpacing: '0.1em',
+                background: agentMeta.color + '1a',
+                border: `1px solid ${agentMeta.color}55`,
+                borderRadius: 3, padding: '1px 5px', color: agentMeta.color,
+                textTransform: 'uppercase',
+              }}>MANAGER</span>
+            )}
+          </div>
+        )}
+
         {/* Main bubble */}
         <div style={{
           background: isUser
             ? 'linear-gradient(135deg, var(--accent), #4f46e5)'
             : 'var(--bg-card)',
           border: `1px solid ${isUser ? 'transparent' : 'var(--border)'}`,
+          borderLeft: !isUser && agentMeta ? `3px solid ${agentMeta.color}` : undefined,
           borderRadius: isUser ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
           padding: '10px 16px',
           color: isUser ? 'white' : 'var(--text-primary)',

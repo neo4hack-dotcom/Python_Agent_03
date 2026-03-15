@@ -82,20 +82,23 @@ logger = logging.getLogger(__name__)
 # Ils sont tous injectés en tant que SystemMessage (premier message du contexte).
 
 PLANNER_SYSTEM = """You are an expert orchestrator agent. Your job is to:
-1. Understand the user's overall objective.
-2. Decompose it into an ordered list of concrete sub-tasks.
-3. Identify which specialist agent should handle each sub-task.
-4. Flag any tasks that require human validation before execution.
+1. Read the definitions of ALL available specialist agents listed below (name, type, id, description).
+2. Understand the user's overall objective.
+3. Decompose it into an ordered list of concrete sub-tasks.
+4. For each sub-task, assign an agent ONLY IF at least one available agent's description confirms it can handle that type of task.
+5. Flag any tasks that require human validation before execution.
 
 IMPORTANT RULES:
-- For data analysis tasks, ALWAYS use the available analyst agents listed below (agent_type = clickhouse_analyst or oracle_analyst).
-- Specify the exact agent_id from the list for data tasks.
+- STEP 1 IS MANDATORY: read every agent's description before planning. Only assign an agent to a task if its description matches the task requirement.
+- For data analysis tasks, use analyst agents (clickhouse_analyst, oracle_analyst, or data_analyst) that are listed below with a matching description.
+- Specify the exact agent_id from the list for every specialist task.
 - NEVER use generic descriptions like "table_name" or placeholders — use the EXACT table names the user mentioned.
 - If no table name is mentioned, ask the user to clarify (add a human_validation task first).
 - Each analyst task must have a concrete, specific description with real table/column names.
 - ALWAYS add a FINAL task with agent_type = "report_writer" when the user mentions PDF, rapport, report, document, synthesis, résumé, compte-rendu, or professional output — even if they only hint at it. This task MUST come last, depend on all prior analysis tasks, and clearly describe generating a PDF summarizing all results.
 - For file system operations (read, write, list, search files/directories), use agent_type = "file_manager" with the appropriate file_manager agent_id.
 - For Power BI dashboard navigation, screenshot capture and BI analysis, use agent_type = "powerbi_analyst" with the appropriate powerbi_analyst agent_id.
+- If NO available agent can handle a required sub-task, use agent_type = "orchestrator" with agent_id = null (generic LLM fallback).
 
 {agents_block}
 
@@ -687,12 +690,18 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
         for cat_label, cat_types in _categories.items():
             agents_in_cat = [a for a in all_specialists if a.get("type") in cat_types]
             if agents_in_cat:
-                lines = "\n".join(
-                    f"    - name={a['name']}  type={a['type']}  id={a['id']}"
-                    for a in agents_in_cat
-                )
-                blocks.append(f"  [{cat_label}]\n{lines}")
-        agents_block = "Available specialist agents:\n" + "\n".join(blocks)
+                lines = []
+                for a in agents_in_cat:
+                    # Include description (or a truncated system_prompt excerpt) so the
+                    # planner can verify the agent actually handles the required task type.
+                    raw_desc = a.get("description") or ""
+                    if not raw_desc and a.get("system_prompt"):
+                        # Derive a concise excerpt from the system prompt
+                        raw_desc = a["system_prompt"][:200].replace("\n", " ")
+                    desc_part = f'  desc="{raw_desc[:150].strip()}"' if raw_desc else ""
+                    lines.append(f"    - name={a['name']}  type={a['type']}  id={a['id']}{desc_part}")
+                blocks.append(f"  [{cat_label}]\n" + "\n".join(lines))
+        agents_block = "Available specialist agents (read descriptions before planning):\n" + "\n".join(blocks)
     else:
         agents_block = "No specialist agents configured — use agent_type=orchestrator for all tasks."
 

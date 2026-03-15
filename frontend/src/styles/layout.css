@@ -199,9 +199,15 @@
   flex-shrink: 0;
 }
 
-.agent-icon-orchestrator { background: rgba(99,102,241,0.15); }
-.agent-icon-analyst { background: rgba(34,197,94,0.15); }
-.agent-icon-custom { background: rgba(245,158,11,0.15); }
+.agent-icon-orchestrator   { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.35); }
+.agent-icon-clickhouse     { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.35); }
+.agent-icon-oracle         { background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.35); }
+.agent-icon-data-analyst   { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.35); }
+.agent-icon-report         { background: rgba(37,99,235,0.15);  border: 1px solid rgba(37,99,235,0.35);  }
+.agent-icon-file           { background: rgba(8,145,178,0.15);  border: 1px solid rgba(8,145,178,0.35);  }
+.agent-icon-powerbi        { background: rgba(249,115,22,0.15); border: 1px solid rgba(249,115,22,0.35); }
+.agent-icon-analyst        { background: rgba(34,197,94,0.15);  border: 1px solid rgba(34,197,94,0.35);  }
+.agent-icon-custom         { background: rgba(100,116,139,0.15);border: 1px solid rgba(100,116,139,0.35); }
 
 .agent-card-actions {
   display: flex;

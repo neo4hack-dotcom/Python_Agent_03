@@ -6,14 +6,14 @@ import { useToast } from '../components/Toast'
 import AgentModal from '../components/AgentModal'
 
 const TYPE_LABELS = {
-  orchestrator: { label: 'Orchestrateur', icon: '🎯', css: 'agent-icon-orchestrator' },
-  data_analyst: { label: 'Analyste de Données', icon: '🧠', css: 'agent-icon-data-analyst' },
-  clickhouse_analyst: { label: 'Analyste ClickHouse', icon: '📊', css: 'agent-icon-analyst' },
-  oracle_analyst: { label: 'Analyste Oracle', icon: '🔮', css: 'agent-icon-analyst' },
-  report_writer: { label: 'Rédacteur PDF', icon: '📄', css: 'agent-icon-report' },
-  file_manager: { label: 'Gestionnaire Fichiers', icon: '🗂️', css: 'agent-icon-file' },
-  powerbi_analyst: { label: 'Analyste Power BI', icon: '📈', css: 'agent-icon-powerbi' },
-  custom: { label: 'Personnalisé', icon: '🤖', css: 'agent-icon-custom' },
+  orchestrator:       { label: 'Orchestrateur',       icon: '🌐', css: 'agent-icon-orchestrator', color: '#6366f1' },
+  data_analyst:       { label: 'Analyste de Données', icon: '🧠', css: 'agent-icon-data-analyst',  color: '#10b981' },
+  clickhouse_analyst: { label: 'Analyste ClickHouse', icon: '📊', css: 'agent-icon-clickhouse',    color: '#f59e0b' },
+  oracle_analyst:     { label: 'Analyste Oracle',     icon: '🔮', css: 'agent-icon-oracle',         color: '#8b5cf6' },
+  report_writer:      { label: 'Rédacteur PDF',       icon: '📄', css: 'agent-icon-report',         color: '#2563eb' },
+  file_manager:       { label: 'Gest. Fichiers',      icon: '🗂️', css: 'agent-icon-file',           color: '#0891b2' },
+  powerbi_analyst:    { label: 'Analyste Power BI',   icon: '📈', css: 'agent-icon-powerbi',        color: '#f97316' },
+  custom:             { label: 'Personnalisé',         icon: '🤖', css: 'agent-icon-custom',         color: '#64748b' },
 }
 
 export default function AgentsPage() {
@@ -110,13 +110,24 @@ function AgentCard({ agent, connections, onEdit, onDelete, onChat }) {
   const conn = connections.find((c) => c.id === agent.connection_id)
 
   return (
-    <div className="agent-card">
+    <div className="agent-card" style={{ borderLeft: `3px solid ${typeInfo.color}` }}>
       <div className="agent-card-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div className={`agent-icon ${typeInfo.css}`}>{typeInfo.icon}</div>
           <div>
-            <div className="agent-card-name">{agent.name}</div>
-            <span className="badge badge-accent" style={{ marginTop: 4 }}>{typeInfo.label}</span>
+            <div className="agent-card-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {agent.name}
+              {agent.type === 'orchestrator' && (
+                <span style={{
+                  fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
+                  background: typeInfo.color + '1a',
+                  border: `1px solid ${typeInfo.color}55`,
+                  borderRadius: 3, padding: '1px 5px', color: typeInfo.color,
+                  textTransform: 'uppercase',
+                }}>MANAGER</span>
+              )}
+            </div>
+            <span className="badge badge-accent" style={{ marginTop: 4, color: typeInfo.color, background: typeInfo.color + '15', borderColor: typeInfo.color + '40' }}>{typeInfo.label}</span>
           </div>
         </div>
         <div className="agent-card-actions">
