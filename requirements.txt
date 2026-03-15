@@ -29,6 +29,10 @@ openpyxl==3.1.5
 httpx==0.28.1
 aiofiles==24.1.0
 
+# PDF generation
+weasyprint>=62.3
+markdown>=3.7
+
 # Utilities
 python-dotenv==1.0.1
 tenacity==9.0.0

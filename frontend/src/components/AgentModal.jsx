@@ -7,6 +7,7 @@ const AGENT_TYPES = [
   { value: 'data_analyst', label: '🧠 Analyste de Données', desc: 'Analyse statistique, profiling, KPIs et insights business' },
   { value: 'clickhouse_analyst', label: '📊 Analyste ClickHouse', desc: 'Génère et exécute des requêtes SQL ClickHouse' },
   { value: 'oracle_analyst', label: '🔮 Analyste Oracle', desc: 'Génère et exécute des requêtes SQL Oracle' },
+  { value: 'report_writer', label: '📄 Rédacteur PDF', desc: 'Génère des rapports PDF professionnels à partir de la session' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
 ]
 
@@ -35,6 +36,9 @@ Tu peux travailler avec ou sans base de données connectée.`,
 - Utilise les fonctions Oracle : TRUNC(), TO_DATE(), analytic functions OVER PARTITION BY
 - Optimise les colonnes indexées dans les WHERE
 - Format SQL : mots-clés en MAJUSCULES, indentation propre`,
+  report_writer: `Tu es un consultant senior spécialisé en rédaction de rapports d'analyse professionnels.
+Tu transformes les résultats d'analyses en rapports PDF complets, structurés et prêts pour présentation.
+Structure : Résumé Exécutif → Contexte → Méthodologie → Analyse → Résultats Clés → Recommandations → Conclusion.`,
   custom: `Tu es un assistant IA expert. Réponds de façon précise et structurée.`,
 }
 

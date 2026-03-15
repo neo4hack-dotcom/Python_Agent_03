@@ -266,3 +266,53 @@ class AnalystState(TypedDict):
     # le graphe sort de la boucle tools ↔ agent même si l'agent veut continuer.
     # Valeur typique : 0 initialement, limite à 8 iterations (4 cycles agent+tools).
     iteration_count: int
+
+
+class ReportState(TypedDict):
+    """
+    État du graphe Rédacteur de Rapports (report_graph.py).
+
+    Ce graphe transforme une conversation ou une demande en un rapport
+    d'analyse professionnel exportable en PDF :
+      1. report_writer_node : le LLM génère un rapport Markdown structuré
+         (couverture, résumé exécutif, analyse, insights, recommandations)
+      2. pdf_node : weasyprint convertit le Markdown en PDF professionnel
+
+    Cycle :
+      START → report_writer_node → pdf_node → END
+
+    Utilisation :
+      - Agent standalone 📄 "Rapport PDF" : reçoit la demande + historique session
+      - Délégation par l'orchestrateur : quand l'user demande un rapport de synthèse
+    """
+
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+    # ── Entrée ─────────────────────────────────────────────────────────────────
+    # Demande de l'utilisateur (ex: "Génère un rapport PDF de cette analyse").
+    user_request: str
+
+    # Historique de la conversation sérialisé en texte.
+    # Contient tous les échanges user/assistant de la session courante.
+    # Utilisé par le LLM pour construire le rapport à partir des résultats.
+    session_context: Optional[str]
+
+    # ── Rapport généré ─────────────────────────────────────────────────────────
+    # Contenu Markdown du rapport produit par report_writer_node.
+    # Structure attendue : titre, résumé exécutif, analyse, résultats, recommandations.
+    report_markdown: Optional[str]
+
+    # ── PDF ────────────────────────────────────────────────────────────────────
+    # Chemin absolu vers le PDF généré par pdf_node (ex: data/reports/rapport_UUID.pdf).
+    pdf_path: Optional[str]
+
+    # UUID du rapport — utilisé dans l'URL de téléchargement /api/report/{id}/download.
+    report_id: Optional[str]
+
+    # ── Réponse finale chat ────────────────────────────────────────────────────
+    # Message court affiché dans le chat pour annoncer la disponibilité du PDF.
+    final_answer: Optional[str]
+
+    # ── Identifiants ───────────────────────────────────────────────────────────
+    agent_id: str
+    session_id: str

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Send, Bot, Plus, Trash2, Download, Database,
-  ChevronDown, MessageSquare, AlertCircle, CheckCircle
+  ChevronDown, MessageSquare, AlertCircle, CheckCircle, FileText
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -23,6 +23,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [showAgentPicker, setShowAgentPicker] = useState(false)
+  const [lastPdfReady, setLastPdfReady] = useState(null)  // {report_id, download_url, filename}
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -139,6 +140,8 @@ export default function ChatPage() {
               m.id === 'streaming' ? { ...m, metadata: { ...m.metadata, query_result: event } } : m
             )
           )
+        } else if (event.type === 'pdf_ready') {
+          setLastPdfReady(event)
         } else if (event.type === 'error') {
           setMessages((prev) =>
             prev.map((m) =>
@@ -211,6 +214,8 @@ export default function ChatPage() {
     if (type === 'orchestrator') return '🎯'
     if (type === 'clickhouse_analyst') return '📊'
     if (type === 'oracle_analyst') return '🔮'
+    if (type === 'data_analyst') return '🧠'
+    if (type === 'report_writer') return '📄'
     return '🤖'
   }
 
@@ -336,12 +341,25 @@ export default function ChatPage() {
               <span style={{ color: 'var(--text-muted)' }}>Sélectionnez un agent</span>
             )}
           </div>
-          {sessionIdRef.current && (
-            <button className="btn btn-secondary btn-sm" onClick={handleExportSession}>
-              <Download size={13} />
-              Exporter Excel
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {lastPdfReady && (
+              <a
+                href={lastPdfReady.download_url}
+                download={lastPdfReady.filename}
+                className="btn btn-primary btn-sm"
+                style={{ textDecoration: 'none', background: 'linear-gradient(135deg,#1a3a6c,#2563eb)' }}
+              >
+                <FileText size={13} />
+                Télécharger PDF
+              </a>
+            )}
+            {sessionIdRef.current && (
+              <button className="btn btn-secondary btn-sm" onClick={handleExportSession}>
+                <Download size={13} />
+                Exporter Excel
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Messages */}

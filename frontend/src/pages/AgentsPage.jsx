@@ -10,6 +10,7 @@ const TYPE_LABELS = {
   data_analyst: { label: 'Analyste de Données', icon: '🧠', css: 'agent-icon-data-analyst' },
   clickhouse_analyst: { label: 'Analyste ClickHouse', icon: '📊', css: 'agent-icon-analyst' },
   oracle_analyst: { label: 'Analyste Oracle', icon: '🔮', css: 'agent-icon-analyst' },
+  report_writer: { label: 'Rédacteur PDF', icon: '📄', css: 'agent-icon-report' },
   custom: { label: 'Personnalisé', icon: '🤖', css: 'agent-icon-custom' },
 }
 

@@ -20,6 +20,7 @@ export default function Sidebar({ open, onToggle }) {
     if (type === 'data_analyst') return '🧠'
     if (type === 'clickhouse_analyst') return '📊'
     if (type === 'oracle_analyst') return '🔮'
+    if (type === 'report_writer') return '📄'
     return '🤖'
   }
 

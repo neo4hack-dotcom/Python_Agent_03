@@ -17,6 +17,7 @@ from backend.database import db, COLL_AGENTS, COLL_SESSIONS, COLL_MESSAGES
 from backend.graphs.orchestrator_graph import build_orchestrator_graph
 from backend.graphs.analyst_graph import build_analyst_graph
 from backend.graphs.data_analyst_graph import build_data_analyst_graph
+from backend.graphs.report_graph import build_report_graph
 from backend.models.agent import AgentType
 from backend.models.chat import ChatRequest, ChatMessage, ChatSession, MessageRole
 
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/api/chat", tags=["Chat"])
 _orchestrator_graph = None
 _analyst_graph = None
 _data_analyst_graph = None
+_report_graph = None
 
 
 def _get_orchestrator():
@@ -48,6 +50,13 @@ def _get_data_analyst():
     if _data_analyst_graph is None:
         _data_analyst_graph = build_data_analyst_graph()
     return _data_analyst_graph
+
+
+def _get_report():
+    global _report_graph
+    if _report_graph is None:
+        _report_graph = build_report_graph()
+    return _report_graph
 
 
 def _get_or_create_session(agent_id: str, session_id: Optional[str]) -> str:
@@ -219,11 +228,70 @@ async def _run_data_analyst(agent_id: str, session_id: str, message: str) -> Asy
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
+async def _run_report(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
+    """Runner SSE pour l'agent rédacteur de rapports PDF."""
+    graph = _get_report()
+    config = {"configurable": {"thread_id": f"report_{session_id}"}}
+
+    # Charger l'historique de la session pour contexte
+    history = db.get_list(COLL_MESSAGES, session_id)
+    context_lines = []
+    for msg in history[-30:]:  # max 30 derniers messages
+        role = "Utilisateur" if msg.get("role") == "user" else "Assistant"
+        content = msg.get("content", "")
+        if content:
+            context_lines.append(f"**{role}** : {content}")
+    session_context = "\n\n".join(context_lines)
+
+    initial_state = {
+        "messages": [],
+        "user_request": message,
+        "session_context": session_context,
+        "report_markdown": None,
+        "pdf_path": None,
+        "report_id": None,
+        "final_answer": None,
+        "agent_id": agent_id,
+        "session_id": session_id,
+    }
+
+    try:
+        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            msgs = event.get("messages", [])
+            if msgs:
+                last = msgs[-1]
+                if hasattr(last, "content") and last.content:
+                    yield json.dumps({"type": "token", "content": last.content}) + "\n"
+                    await asyncio.sleep(0)
+
+        final_state = graph.get_state(config)
+        vals = final_state.values
+        final_answer = vals.get("final_answer", "")
+        report_id = vals.get("report_id")
+
+        if final_answer:
+            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+
+        # Émettre l'événement pdf_ready pour que le frontend affiche le bouton de téléchargement
+        if report_id:
+            yield json.dumps({
+                "type": "pdf_ready",
+                "report_id": report_id,
+                "download_url": f"/api/report/{report_id}/download",
+                "filename": f"rapport_analyse_{report_id[:8]}.pdf",
+            }) + "\n"
+    except Exception as e:
+        logger.error("Report writer error: %s", e)
+        yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+
+
 def _get_runner(agent_type: str):
     if agent_type == AgentType.ORCHESTRATOR:
         return _run_orchestrator
     if agent_type == AgentType.DATA_ANALYST:
         return _run_data_analyst
+    if agent_type == AgentType.REPORT_WRITER:
+        return _run_report
     return _run_analyst
 
 

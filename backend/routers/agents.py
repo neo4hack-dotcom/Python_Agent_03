@@ -29,6 +29,11 @@ DEFAULT_PROMPTS = {
         "Perform statistical analysis, data profiling, trend analysis, KPI computation, "
         "and deliver clear, data-driven business insights with actionable recommendations."
     ),
+    "report_writer": (
+        "You are a senior consultant specializing in professional report writing. "
+        "Transform analysis results into comprehensive, well-structured PDF reports "
+        "with executive summary, methodology, findings, and actionable recommendations."
+    ),
     "custom": "You are a helpful AI assistant.",
 }
 
