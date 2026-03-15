@@ -26,6 +26,7 @@ from backend.routers import (
     config_router,
     toolkits_router,
     report_router,
+    powerbi_router,
 )
 
 logging.basicConfig(
@@ -74,6 +75,7 @@ app.include_router(export_router)
 app.include_router(config_router)
 app.include_router(toolkits_router)
 app.include_router(report_router)
+app.include_router(powerbi_router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

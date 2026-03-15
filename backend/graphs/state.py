@@ -295,6 +295,31 @@ class FileAgentState(TypedDict):
     session_id: str
 
 
+class PowerBIAgentState(TypedDict):
+    """
+    État du graphe Power BI Analyst (powerbi_graph.py).
+
+    Agent ReAct qui navigue dans Power BI via Playwright,
+    capture des screenshots et produit des analyses business structurées.
+    """
+
+    # ── Fil de messages LangChain ────────────────────────────────────────────
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+    # ── Demande de l'utilisateur ──────────────────────────────────────────────
+    user_request: str
+
+    # ── Réponse finale ───────────────────────────────────────────────────────
+    final_answer: Optional[str]
+
+    # ── Compteur d'itérations ReAct (garde anti-boucle) ─────────────────────
+    iteration_count: int
+
+    # ── Identifiants ─────────────────────────────────────────────────────────
+    agent_id: str
+    session_id: str
+
+
 class ReportState(TypedDict):
     """
     État du graphe Rédacteur de Rapports (report_graph.py).

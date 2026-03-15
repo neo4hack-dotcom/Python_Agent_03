@@ -22,6 +22,7 @@ export default function Sidebar({ open, onToggle }) {
     if (type === 'oracle_analyst') return '🔮'
     if (type === 'report_writer') return '📄'
     if (type === 'file_manager') return '🗂️'
+    if (type === 'powerbi_analyst') return '📈'
     return '🤖'
   }
 

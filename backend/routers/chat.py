@@ -19,6 +19,7 @@ from backend.graphs.analyst_graph import build_analyst_graph
 from backend.graphs.data_analyst_graph import build_data_analyst_graph
 from backend.graphs.report_graph import build_report_graph
 from backend.graphs.file_graph import build_file_graph
+from backend.graphs.powerbi_graph import build_powerbi_graph
 from backend.models.agent import AgentType
 from backend.models.chat import ChatRequest, ChatMessage, ChatSession, MessageRole
 
@@ -31,6 +32,14 @@ _analyst_graph = None
 _data_analyst_graph = None
 _report_graph = None
 _file_graph = None
+_powerbi_graph = None
+
+
+def _get_powerbi_agent():
+    global _powerbi_graph
+    if _powerbi_graph is None:
+        _powerbi_graph = build_powerbi_graph()
+    return _powerbi_graph
 
 
 def _get_file_agent():
@@ -376,6 +385,71 @@ async def _run_file_agent(agent_id: str, session_id: str, message: str) -> Async
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
+async def _run_powerbi_agent(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
+    """Runner SSE pour l'agent Power BI Analyst (Playwright)."""
+    graph = _get_powerbi_agent()
+    config = {"configurable": {"thread_id": session_id}}
+
+    history = _load_conversation_history(session_id)
+    initial_state = {
+        "messages": history + [HumanMessage(content=message)],
+        "user_request": message,
+        "final_answer": None,
+        "iteration_count": 0,
+        "agent_id": agent_id,
+        "session_id": session_id,
+    }
+
+    try:
+        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            msgs = event.get("messages", [])
+            if msgs:
+                last = msgs[-1]
+                if hasattr(last, "content") and last.content:
+                    content = last.content
+                    # Detect screenshot captures — emit screenshot_ready event for frontend display
+                    if "SCREENSHOT_CAPTURED:" in content:
+                        lines = content.split("\n")
+                        filename_line = next(
+                            (l for l in lines if l.startswith("SCREENSHOT_CAPTURED:")), ""
+                        )
+                        filename = filename_line.replace("SCREENSHOT_CAPTURED:", "").strip()
+                        if filename:
+                            yield json.dumps({
+                                "type": "screenshot_ready",
+                                "filename": filename,
+                                "screenshot_url": f"/api/powerbi/screenshot/{filename}",
+                            }) + "\n"
+                        # Also emit the rest of the tool output as a token (minus the base64)
+                        clean = "\n".join(
+                            l for l in lines
+                            if not l.startswith("SCREENSHOT_CAPTURED:")
+                            and not l.startswith("BASE64_IMAGE:")
+                        ).strip()
+                        if clean:
+                            yield json.dumps({"type": "token", "content": clean}) + "\n"
+                    else:
+                        yield json.dumps({"type": "token", "content": content}) + "\n"
+                    await asyncio.sleep(0)
+                # Emit tool calls as log events
+                if hasattr(last, "tool_calls") and last.tool_calls:
+                    for tc in last.tool_calls:
+                        yield json.dumps({
+                            "type": "tool_call",
+                            "tool": tc["name"],
+                            "args": str(tc.get("args", {}))[:200],
+                        }) + "\n"
+                        await asyncio.sleep(0)
+
+        final_state = graph.get_state(config)
+        final_answer = final_state.values.get("final_answer", "")
+        if final_answer:
+            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+    except Exception as e:
+        logger.error("PowerBI agent error: %s", e)
+        yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+
+
 def _get_runner(agent_type: str):
     if agent_type == AgentType.ORCHESTRATOR:
         return _run_orchestrator
@@ -385,6 +459,8 @@ def _get_runner(agent_type: str):
         return _run_report
     if agent_type == AgentType.FILE_MANAGER:
         return _run_file_agent
+    if agent_type == AgentType.POWERBI_ANALYST:
+        return _run_powerbi_agent
     return _run_analyst
 
 

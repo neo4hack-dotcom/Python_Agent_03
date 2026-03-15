@@ -12,6 +12,7 @@ const TYPE_LABELS = {
   oracle_analyst: { label: 'Analyste Oracle', icon: '🔮', css: 'agent-icon-analyst' },
   report_writer: { label: 'Rédacteur PDF', icon: '📄', css: 'agent-icon-report' },
   file_manager: { label: 'Gestionnaire Fichiers', icon: '🗂️', css: 'agent-icon-file' },
+  powerbi_analyst: { label: 'Analyste Power BI', icon: '📈', css: 'agent-icon-powerbi' },
   custom: { label: 'Personnalisé', icon: '🤖', css: 'agent-icon-custom' },
 }
 

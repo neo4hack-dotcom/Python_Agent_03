@@ -22,6 +22,7 @@ const AGENT_META = {
   data_analyst:      { icon: '🧠', color: '#10b981', label: 'Data Analyst' },
   report_writer:     { icon: '📄', color: '#2563eb', label: 'Rapport PDF' },
   file_manager:      { icon: '🗂️', color: '#0891b2', label: 'Fichiers' },
+  powerbi_analyst:   { icon: '📈', color: '#f97316', label: 'Power BI' },
   custom:            { icon: '🤖', color: '#64748b', label: 'Custom' },
 }
 
@@ -32,6 +33,7 @@ const WELCOME_HINTS = {
   data_analyst: ['Profiling statistique des données fournies', 'Analyse des tendances et saisonnalité', 'KPIs et métriques business'],
   report_writer: ['Génère un rapport PDF de notre analyse', 'Synthèse executive de la session', 'Rapport avec recommandations actionnables'],
   file_manager: ['Liste les fichiers dans /home/user/data', 'Lis le fichier rapport.csv', 'Crée un dossier "exports" dans /tmp'],
+  powerbi_analyst: ['Analyse le dashboard Ventes du rapport Power BI', 'Capture et analyse l\'onglet KPIs du rapport', 'Filtre le rapport sur l\'année 2024 et analyse les tendances'],
 }
 
 // ── Copy button for code blocks ────────────────────────────────────────────────
@@ -166,6 +168,7 @@ function MessageBubble({ message, onExport, agentMeta }) {
   const hasQueryResult = message.metadata?.query_result
   const hasSql = message.metadata?.sql
   const hasPdf = message.metadata?.pdf_ready
+  const screenshots = message.metadata?.screenshots || []
   const [showTable, setShowTable] = useState(false)
   const [hover, setHover] = useState(false)
 
@@ -277,6 +280,42 @@ function MessageBubble({ message, onExport, agentMeta }) {
                 onExport={onExport}
               />
             )}
+          </div>
+        )}
+
+        {/* Power BI Screenshots */}
+        {screenshots.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {screenshots.map((s, i) => (
+              <div key={i} style={{
+                borderRadius: 8, overflow: 'hidden',
+                border: '1px solid rgba(249,115,22,0.3)',
+                background: 'rgba(249,115,22,0.04)',
+              }}>
+                <div style={{
+                  padding: '5px 12px', fontSize: 11, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  color: '#f97316', borderBottom: '1px solid rgba(249,115,22,0.2)',
+                }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    📈 Capture Power BI — {s.filename}
+                  </span>
+                  <a
+                    href={s.screenshot_url}
+                    download={s.filename}
+                    style={{ color: '#f97316', fontSize: 10, textDecoration: 'underline' }}
+                  >
+                    ↓ télécharger
+                  </a>
+                </div>
+                <img
+                  src={s.screenshot_url}
+                  alt={s.filename}
+                  style={{ width: '100%', display: 'block', maxHeight: 480, objectFit: 'contain' }}
+                  onError={(e) => { e.target.style.display = 'none' }}
+                />
+              </div>
+            ))}
           </div>
         )}
 
@@ -556,6 +595,12 @@ export default function ChatPage() {
           setLastPdfReady(event)
           setMessages(prev => prev.map(m =>
             m.id === 'streaming' ? { ...m, metadata: { ...m.metadata, pdf_ready: event } } : m
+          ))
+        } else if (event.type === 'screenshot_ready') {
+          setMessages(prev => prev.map(m =>
+            m.id === 'streaming'
+              ? { ...m, metadata: { ...m.metadata, screenshots: [...(m.metadata.screenshots || []), event] } }
+              : m
           ))
         } else if (event.type === 'human_validation') {
           setHumanValidationRequest(event.content)
@@ -901,9 +946,11 @@ export default function ChatPage() {
                       ? 'Demandez un rapport PDF de la session… (Entrée pour envoyer)'
                       : selectedAgent.type === 'file_manager'
                         ? 'Naviguez dans vos fichiers, créez, lisez, modifiez… (Entrée pour envoyer)'
-                        : selectedAgent.type.includes('analyst')
-                          ? 'Posez votre question analytique… (Entrée pour envoyer)'
-                          : 'Décrivez votre tâche… (Entrée pour envoyer)'
+                        : selectedAgent.type === 'powerbi_analyst'
+                          ? 'Analysez un dashboard Power BI — donnez l\'URL du rapport… (Entrée pour envoyer)'
+                          : selectedAgent.type.includes('analyst')
+                            ? 'Posez votre question analytique… (Entrée pour envoyer)'
+                            : 'Décrivez votre tâche… (Entrée pour envoyer)'
                   }
                   disabled={sending}
                 />

@@ -9,6 +9,7 @@ const AGENT_TYPES = [
   { value: 'oracle_analyst', label: '🔮 Analyste Oracle', desc: 'Génère et exécute des requêtes SQL Oracle' },
   { value: 'report_writer', label: '📄 Rédacteur PDF', desc: 'Génère des rapports PDF professionnels à partir de la session' },
   { value: 'file_manager', label: '🗂️ Gestionnaire de Fichiers', desc: 'Navigation, lecture et modification de fichiers (txt, csv, xlsx, docx, parquet…)' },
+  { value: 'powerbi_analyst', label: '📈 Analyste Power BI', desc: 'Navigation automatisée dans Power BI via Playwright, captures et analyses de dashboards' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
 ]
 
@@ -44,6 +45,20 @@ Structure : Résumé Exécutif → Contexte → Méthodologie → Analyse → R�
 Tu aides les utilisateurs à naviguer dans des répertoires, lire, créer et modifier des fichiers.
 Tu supportes de nombreux formats : texte, CSV, Excel, Word, Parquet et plus encore.
 Pour toute modification ou suppression, tu demandes TOUJOURS confirmation avant d'agir.`,
+  powerbi_analyst: `Tu es un Expert Analyste Power BI & Data Insights.
+
+Ton rôle est d'agir comme un analyste de données augmenté :
+- Tu navigues dans les rapports Power BI via un navigateur automatisé (Playwright).
+- Tu captures des dashboards et analyses les KPIs, tendances et anomalies.
+- Tu proposes des plans d'action stratégiques basés sur les données observées.
+
+Méthodologie pour chaque dashboard :
+1. Identifier le contexte (Ventes, RH, Finance, Logistique…)
+2. Lire les KPIs critiques et les comparer aux cibles (rouge/vert/jaune)
+3. Analyser les tendances (montée, descente, saisonnalité)
+4. Proposer 3 recommandations concrètes et actionnables
+
+Style : professionnel, analytique, direct. Utilise des listes à puces pour la clarté.`,
   custom: `Tu es un assistant IA expert. Réponds de façon précise et structurée.`,
 }
 
@@ -268,6 +283,57 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
                     Si renseigné, l'agent ne pourra accéder qu'aux fichiers à l'intérieur de ce répertoire (sandbox). Recommandé pour la sécurité.
                   </span>
                 </div>
+              )}
+
+              {form.type === 'powerbi_analyst' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Fichier de session <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(cookies d'authentification)</span></label>
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Ex: data/powerbi_session.json"
+                      value={form.extra_config?.session_file || ''}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        extra_config: { ...f.extra_config, session_file: e.target.value }
+                      }))}
+                    />
+                    <span className="text-sm text-muted">
+                      Fichier JSON pour conserver les cookies Power BI (évite le MFA à chaque session). Généré via <code>save_browser_session()</code>.
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={form.extra_config?.headless !== false}
+                        onChange={(e) => setForm((f) => ({
+                          ...f,
+                          extra_config: { ...f.extra_config, headless: e.target.checked }
+                        }))}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      Mode headless (navigateur invisible)
+                    </label>
+                    <span className="text-sm text-muted">
+                      Décocher pour voir le navigateur (recommandé lors de la première connexion manuelle à Power BI).
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Répertoire des captures <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optionnel)</span></label>
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Ex: data/powerbi_screenshots"
+                      value={form.extra_config?.screenshots_dir || ''}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        extra_config: { ...f.extra_config, screenshots_dir: e.target.value }
+                      }))}
+                    />
+                  </div>
+                </>
               )}
 
               {form.type === 'orchestrator' && (
