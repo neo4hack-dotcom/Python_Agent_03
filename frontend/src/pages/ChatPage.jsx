@@ -2,13 +2,14 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Send, Bot, Plus, Trash2, Download, Database,
-  ChevronDown, MessageSquare, AlertCircle, CheckCircle, FileText
+  ChevronDown, MessageSquare, AlertCircle, CheckCircle, FileText, Terminal
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { agentsApi, chatApi, exportApi, downloadBlob, streamChat } from '../services/api'
 import { useToast } from '../components/Toast'
 import DataTable from '../components/DataTable'
+import AgentLogPanel from '../components/AgentLogPanel'
 
 export default function ChatPage() {
   const { agentId } = useParams()
@@ -23,7 +24,9 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [showAgentPicker, setShowAgentPicker] = useState(false)
-  const [lastPdfReady, setLastPdfReady] = useState(null)  // {report_id, download_url, filename}
+  const [lastPdfReady, setLastPdfReady] = useState(null)
+  const [showLogs, setShowLogs] = useState(false)
+  const [agentLogs, setAgentLogs] = useState([])
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -117,9 +120,14 @@ export default function ChatPage() {
     let fullContent = ''
     let queryResult = null
     let newSessionId = sessionIdRef.current
+    // Reset logs for new request
+    setAgentLogs([])
 
     try {
       for await (const event of streamChat(selectedAgent.id, sessionIdRef.current, userMessage)) {
+        // Feed ALL events to log panel
+        setAgentLogs(prev => [...prev, event])
+
         if (event.type === 'token' || event.type === 'final') {
           fullContent = event.content
           setMessages((prev) =>
@@ -222,6 +230,15 @@ export default function ChatPage() {
   return (
     <div className="page" style={{ flexDirection: 'row', height: '100vh', overflow: 'hidden' }}>
       <ToastContainer />
+
+      {/* Log Panel */}
+      {showLogs && (
+        <AgentLogPanel
+          logs={agentLogs}
+          onClose={() => setShowLogs(false)}
+          agentName={selectedAgent?.name}
+        />
+      )}
 
       {/* Sessions Sidebar */}
       <div style={{
@@ -341,7 +358,30 @@ export default function ChatPage() {
               <span style={{ color: 'var(--text-muted)' }}>Sélectionnez un agent</span>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              className={`btn btn-secondary btn-sm ${sending ? 'active' : ''}`}
+              onClick={() => setShowLogs(!showLogs)}
+              title="Afficher les logs de l'agent"
+              style={{
+                position: 'relative',
+                borderColor: agentLogs.length > 0 ? 'var(--accent)' : undefined,
+              }}
+            >
+              <Terminal size={13} />
+              Logs
+              {agentLogs.length > 0 && (
+                <span style={{
+                  position: 'absolute', top: -5, right: -5,
+                  background: sending ? 'var(--accent)' : 'var(--text-muted)',
+                  color: 'white', borderRadius: 8, fontSize: 9, padding: '0 4px',
+                  minWidth: 14, textAlign: 'center',
+                  animation: sending ? 'pulse 1.5s infinite' : 'none',
+                }}>
+                  {agentLogs.length}
+                </span>
+              )}
+            </button>
             {lastPdfReady && (
               <a
                 href={lastPdfReady.download_url}
