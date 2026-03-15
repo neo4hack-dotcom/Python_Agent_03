@@ -11,7 +11,7 @@ from typing import AsyncGenerator, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 from backend.database import db, COLL_AGENTS, COLL_SESSIONS, COLL_MESSAGES
 from backend.graphs.orchestrator_graph import build_orchestrator_graph
@@ -59,6 +59,38 @@ def _get_report():
     return _report_graph
 
 
+def _load_conversation_history(session_id: str, max_messages: int = 20) -> list:
+    """
+    Charge l'historique de conversation d'une session et le convertit en
+    messages LangChain (HumanMessage / AIMessage) pour injection dans le graphe.
+
+    Limite à max_messages échanges pour ne pas dépasser le context window du LLM.
+    Exclut le dernier message (celui qui vient d'être ajouté par l'utilisateur).
+    """
+    if not session_id:
+        return []
+    history = db.get_list(COLL_MESSAGES, session_id)
+    # On prend les N-1 derniers (le dernier a déjà été ajouté comme HumanMessage)
+    past = history[:-1][-max_messages:]
+    lc_messages = []
+    for msg in past:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        if role == "user":
+            lc_messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            lc_messages.append(AIMessage(content=content))
+    return lc_messages
+
+
+def _auto_session_title(message: str) -> str:
+    """Génère un titre court pour la session à partir du premier message."""
+    cleaned = message.strip()
+    return (cleaned[:48] + "…") if len(cleaned) > 48 else cleaned
+
+
 def _get_or_create_session(agent_id: str, session_id: Optional[str]) -> str:
     if session_id and db.exists(COLL_SESSIONS, session_id):
         return session_id
@@ -81,8 +113,9 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
     config = {"configurable": {"thread_id": session_id}}
     agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
 
+    history = _load_conversation_history(session_id)
     initial_state = {
-        "messages": [HumanMessage(content=message)],
+        "messages": history + [HumanMessage(content=message)],
         "user_request": message,
         "task_backlog": [],
         "current_task": None,
@@ -119,8 +152,9 @@ async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGen
     config = {"configurable": {"thread_id": session_id}}
     agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
 
+    history = _load_conversation_history(session_id)
     initial_state = {
-        "messages": [HumanMessage(content=message)],
+        "messages": history + [HumanMessage(content=message)],
         "user_question": message,
         "generated_sql": None,
         "query_result": None,
@@ -180,8 +214,9 @@ async def _run_data_analyst(agent_id: str, session_id: str, message: str) -> Asy
     from backend.graphs.data_analyst_graph import _auto_schema_context
     schema_context = _auto_schema_context(agent_id, message)
 
+    history = _load_conversation_history(session_id)
     initial_state = {
-        "messages": [],
+        "messages": history,
         "user_question": message,
         "analysis_plan": None,
         "sql_queries": None,
@@ -304,6 +339,10 @@ async def send_message(request: ChatRequest):
         raise HTTPException(404, "Agent not found")
 
     session_id = _get_or_create_session(request.agent_id, request.session_id)
+    # Auto-title session from first user message
+    session = db.get(COLL_SESSIONS, session_id)
+    if session and not session.get("title"):
+        db.upsert(COLL_SESSIONS, session_id, {"title": _auto_session_title(request.message)})
     _save_message(session_id, MessageRole.USER, request.message)
 
     runner = _get_runner(agent.get("type", "orchestrator"))
