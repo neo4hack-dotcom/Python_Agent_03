@@ -50,6 +50,7 @@ Human-in-the-loop :
 """
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -93,6 +94,8 @@ IMPORTANT RULES:
 - If no table name is mentioned, ask the user to clarify (add a human_validation task first).
 - Each analyst task must have a concrete, specific description with real table/column names.
 - When the user explicitly asks for a PDF report, synthesis document, or professional report, add a FINAL task with agent_type = "report_writer". This task should come LAST (after all analysis tasks it depends on) and its description should clearly request a PDF report summarizing all prior results.
+- For file system operations (read, write, list, search files/directories), use agent_type = "file_manager" with the appropriate file_manager agent_id.
+- For Power BI dashboard navigation, screenshot capture and BI analysis, use agent_type = "powerbi_analyst" with the appropriate powerbi_analyst agent_id.
 
 {agents_block}
 
@@ -102,9 +105,9 @@ Respond ONLY with a JSON object in this exact format:
   "tasks": [
     {{
       "id": "task_1",
-      "description": "<specific task with exact table/column names>",
-      "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|report_writer|orchestrator|human_validation>",
-      "agent_id": "<id of the analyst agent to use, or null for orchestrator/report_writer tasks>",
+      "description": "<specific task with exact details>",
+      "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|file_manager|powerbi_analyst|report_writer|orchestrator|human_validation>",
+      "agent_id": "<id of the specialist agent to use, or null for orchestrator/report_writer tasks>",
       "priority": 1,
       "depends_on": [],
       "requires_human_approval": false
@@ -543,6 +546,88 @@ def _run_report_subtask(agent_id: str, task_description: str, session_context: s
     }
 
 
+def _run_file_manager_subtask(agent_id: str, task_description: str) -> Dict[str, Any]:
+    """
+    Exécute le pipeline File Manager pour une sous-tâche de l'orchestrateur.
+
+    Appelle le graphe file_graph compilé en mode synchrone (invoke).
+    Supporte : lecture, écriture, liste, recherche de fichiers/répertoires.
+
+    Args:
+        agent_id: ID de l'agent file_manager configuré.
+        task_description: Description de l'opération à effectuer.
+
+    Returns:
+        Dict avec "success", "result" (narrative Markdown).
+    """
+    from .file_graph import build_file_graph
+
+    logger.info("Running file manager subtask for agent %s: %s", agent_id, task_description[:100])
+    graph = build_file_graph()
+    thread_id = f"orch_file_{uuid.uuid4().hex[:8]}"
+    state: Dict[str, Any] = {
+        "messages": [HumanMessage(content=task_description)],
+        "user_request": task_description,
+        "final_answer": None,
+        "iteration_count": 0,
+        "agent_id": agent_id,
+        "session_id": thread_id,
+    }
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        final_state = graph.invoke(state, config=config)
+        return {
+            "success": True,
+            "result": final_state.get("final_answer") or "File operation completed.",
+        }
+    except Exception as e:
+        logger.error("File manager subtask failed: %s", e, exc_info=True)
+        return {"success": False, "result": f"❌ File manager error: {e}", "error": str(e)}
+
+
+def _run_powerbi_subtask(agent_id: str, task_description: str, session_id: str = "") -> Dict[str, Any]:
+    """
+    Exécute le pipeline Power BI Analyst pour une sous-tâche de l'orchestrateur.
+
+    Appelle le graphe powerbi_graph compilé en mode synchrone (invoke).
+    La session Playwright est identifiée par session_id pour réutiliser
+    le contexte navigateur entre appels successifs.
+
+    Args:
+        agent_id: ID de l'agent powerbi_analyst configuré.
+        task_description: Description de l'analyse à effectuer.
+        session_id: ID de session orchestrateur (propagé au graphe Power BI).
+
+    Returns:
+        Dict avec "success", "result" (analyse Markdown).
+    """
+    from .powerbi_graph import build_powerbi_graph
+
+    logger.info("Running PowerBI subtask for agent %s: %s", agent_id, task_description[:100])
+    # Réutilise le session_id de l'orchestrateur pour que la session Playwright
+    # persiste entre plusieurs sous-tâches Power BI de la même conversation.
+    powerbi_session = session_id or f"orch_pbi_{uuid.uuid4().hex[:8]}"
+    graph = build_powerbi_graph()
+    state: Dict[str, Any] = {
+        "messages": [HumanMessage(content=task_description)],
+        "user_request": task_description,
+        "final_answer": None,
+        "iteration_count": 0,
+        "agent_id": agent_id,
+        "session_id": powerbi_session,
+    }
+    try:
+        config = {"configurable": {"thread_id": powerbi_session}}
+        final_state = graph.invoke(state, config=config)
+        return {
+            "success": True,
+            "result": final_state.get("final_answer") or "Power BI analysis completed.",
+        }
+    except Exception as e:
+        logger.error("PowerBI subtask failed: %s", e, exc_info=True)
+        return {"success": False, "result": f"❌ Power BI agent error: {e}", "error": str(e)}
+
+
 # ── Nœuds du graphe orchestrateur ────────────────────────────────────────────
 
 def planner_node(state: OrchestratorState) -> Dict[str, Any]:
@@ -578,20 +663,38 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
     """
     llm = build_llm()
 
-    # Charge tous les agents spécialistes actifs (SQL + data analyst)
-    analysts = [
+    # Charge tous les agents spécialistes actifs (tous types sauf orchestrator/custom)
+    _specialist_types = (
+        "clickhouse_analyst", "oracle_analyst", "data_analyst",
+        "file_manager", "powerbi_analyst", "report_writer",
+    )
+    all_specialists = [
         a for a in db.get_all(COLL_AGENTS)
-        if a.get("type") in ("clickhouse_analyst", "oracle_analyst", "data_analyst")
-        and a.get("is_active", True)
+        if a.get("type") in _specialist_types and a.get("is_active", True)
     ]
-    if analysts:
-        agents_lines = "\n".join(
-            f"  - name={a['name']}  type={a['type']}  id={a['id']}"
-            for a in analysts
-        )
-        agents_block = f"Available analyst agents (use these for data queries):\n{agents_lines}"
+    # Alias utilisé dans le fallback (compatibilité avec l'ancienne variable)
+    analysts = [a for a in all_specialists if a.get("type") in ("clickhouse_analyst", "oracle_analyst", "data_analyst")]
+
+    if all_specialists:
+        # Regroupe les agents par catégorie pour la lisibilité du prompt
+        _categories = {
+            "Data (SQL / analytics)": ("clickhouse_analyst", "oracle_analyst", "data_analyst"),
+            "File management": ("file_manager",),
+            "Power BI / BI dashboards": ("powerbi_analyst",),
+            "Report generation": ("report_writer",),
+        }
+        blocks = []
+        for cat_label, cat_types in _categories.items():
+            agents_in_cat = [a for a in all_specialists if a.get("type") in cat_types]
+            if agents_in_cat:
+                lines = "\n".join(
+                    f"    - name={a['name']}  type={a['type']}  id={a['id']}"
+                    for a in agents_in_cat
+                )
+                blocks.append(f"  [{cat_label}]\n{lines}")
+        agents_block = "Available specialist agents:\n" + "\n".join(blocks)
     else:
-        agents_block = "No analyst agents configured — use agent_type=orchestrator for all tasks."
+        agents_block = "No specialist agents configured — use agent_type=orchestrator for all tasks."
 
     # Substitution du placeholder {agents_block} dans le template PLANNER_SYSTEM
     system_content = PLANNER_SYSTEM.format(agents_block=agents_block)
@@ -903,6 +1006,107 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                 "success": False,
                 "error": str(e),
             }
+        updated_results = state.get("worker_results", []) + [result_entry]
+        last_error = result_entry.get("error") if not result_entry["success"] else None
+        return {
+            "worker_results": updated_results,
+            "messages": [AIMessage(content=f"Task '{task['id']}' {'completed' if result_entry['success'] else 'failed'}.")],
+            "last_error": last_error,
+        }
+
+    # ── Chemin A4 : délégation au pipeline File Manager ──────────────────────
+    if agent_type == "file_manager":
+        agent_id = task.get("agent_id") or _find_analyst_agent("file_manager")
+        agent_cfg = db.get(COLL_AGENTS, agent_id) if agent_id else None
+        agent_name = agent_cfg.get("name", agent_id) if agent_cfg else "Gestionnaire Fichiers"
+        if not agent_id:
+            result_entry = {
+                "task_id": task["id"],
+                "task_description": task["description"],
+                "agent_type": agent_type,
+                "agent_id": None,
+                "agent_name": "—",
+                "result": "❌ No active file_manager agent found. Please create one first.",
+                "success": False,
+                "error": "No active file_manager agent available.",
+            }
+        else:
+            try:
+                subtask_result = _run_file_manager_subtask(agent_id, task["description"])
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "result": subtask_result["result"],
+                    "success": subtask_result["success"],
+                }
+                if not subtask_result["success"]:
+                    result_entry["error"] = subtask_result.get("error")
+            except Exception as e:
+                logger.error("File manager subtask raised exception: %s", e, exc_info=True)
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "result": f"❌ File manager execution error: {e}",
+                    "success": False,
+                    "error": str(e),
+                }
+        updated_results = state.get("worker_results", []) + [result_entry]
+        last_error = result_entry.get("error") if not result_entry["success"] else None
+        return {
+            "worker_results": updated_results,
+            "messages": [AIMessage(content=f"Task '{task['id']}' {'completed' if result_entry['success'] else 'failed'}.")],
+            "last_error": last_error,
+        }
+
+    # ── Chemin A5 : délégation au pipeline Power BI Analyst ──────────────────
+    if agent_type == "powerbi_analyst":
+        agent_id = task.get("agent_id") or _find_analyst_agent("powerbi_analyst")
+        agent_cfg = db.get(COLL_AGENTS, agent_id) if agent_id else None
+        agent_name = agent_cfg.get("name", agent_id) if agent_cfg else "Analyste Power BI"
+        if not agent_id:
+            result_entry = {
+                "task_id": task["id"],
+                "task_description": task["description"],
+                "agent_type": agent_type,
+                "agent_id": None,
+                "agent_name": "—",
+                "result": "❌ No active powerbi_analyst agent found. Please create one first.",
+                "success": False,
+                "error": "No active powerbi_analyst agent available.",
+            }
+        else:
+            try:
+                # Propagate orchestrator session_id so Playwright session persists
+                subtask_result = _run_powerbi_subtask(agent_id, task["description"], state.get("session_id", ""))
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "result": subtask_result["result"],
+                    "success": subtask_result["success"],
+                }
+                if not subtask_result["success"]:
+                    result_entry["error"] = subtask_result.get("error")
+            except Exception as e:
+                logger.error("PowerBI subtask raised exception: %s", e, exc_info=True)
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "result": f"❌ Power BI agent execution error: {e}",
+                    "success": False,
+                    "error": str(e),
+                }
         updated_results = state.get("worker_results", []) + [result_entry]
         last_error = result_entry.get("error") if not result_entry["success"] else None
         return {
