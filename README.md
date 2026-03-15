@@ -1,6 +1,6 @@
 # 🤖 Python Agent Platform
 
-Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, permettant de créer, configurer et interagir avec des agents IA spécialisés — notamment un orchestrateur et des analystes de bases de données ClickHouse / Oracle.
+Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, permettant de créer, configurer et interagir avec des agents IA spécialisés — orchestrateur, analystes SQL et analyste de données business.
 
 ---
 
@@ -15,6 +15,7 @@ Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, perm
 - [Configuration LLM](#-configuration-llm)
 - [Agents disponibles](#-agents-disponibles)
 - [Sécurité SQL (Guardrails)](#-sécurité-sql-guardrails)
+- [Export / Import de configuration](#-export--import-de-configuration)
 - [API REST](#-api-rest)
 - [Structure du projet](#-structure-du-projet)
 
@@ -27,22 +28,31 @@ Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, perm
 |----------|-------------|
 | **Planification** | Décompose une requête complexe en sous-tâches ordonnées (backlog) |
 | **Routage dynamique** | Sélectionne automatiquement l'agent spécialisé le plus adapté |
-| **Fan-out / Fan-in** | Exécution parallèle de tâches via l'API `Send` de LangGraph |
+| **Délégation réelle** | Exécute les vrais pipelines SQL/data-analyst (pas de réponses LLM inventées) |
 | **Gestion d'état** | State partagé entre nœuds avec `MemorySaver` (checkpoint & reprise) |
 | **Auto-correction** | Boucle de correction si une sous-tâche échoue (max 3 tentatives) |
 | **Human-in-the-loop** | Interruption stratégique pour validation humaine avant action critique |
 | **Synthèse** | Agrégation cohérente de tous les résultats workers en réponse finale |
+
+### Agent Analyste de Données 🧠 *(nouveau)*
+| Capacité | Description |
+|----------|-------------|
+| **Analyse statistique** | Distributions, moyenne/médiane, écart-type, percentiles P10→P99, outliers 2σ, corrélations |
+| **Data Profiling** | Qualité des données, taux de NULL, cardinalité, valeurs aberrantes, couverture temporelle |
+| **Analyse de tendances** | Évolution temporelle, taux MoM/YoY, saisonnalité, anomalies et pics |
+| **KPIs métier** | Calcul, interprétation et benchmark de métriques business |
+| **Recommandations** | Rapport exécutif avec insights chiffrés, recommandations actionnables et points de vigilance |
+| **Sans DB** | Fonctionne sans connexion — analyse les données fournies dans la conversation |
+| **Avec DB** | Génère et exécute plusieurs requêtes SQL en parallèle, puis analyse les données réelles |
 
 ### Agent Analyste ClickHouse / Oracle
 | Capacité | Description |
 |----------|-------------|
 | **SQL optimisé** | Génère des requêtes respectant les best practices (colonnes explicites, filtres sur clés) |
 | **Retry loop** | Cycle `analyst → sql_tool → [synthèse / correction]` jusqu'à 3 tentatives |
-| **Auto-correction SQL** | Le message d'erreur ClickHouse est réinjecté dans le prompt pour auto-correction |
+| **Auto-correction SQL** | Le message d'erreur DB est réinjecté dans le prompt pour auto-correction |
 | **Injection de schéma** | Le contexte de schéma (types, clés primaires, partitions) est fourni dynamiquement |
 | **Fonctions natives** | Encourage `uniq()`, `argMax()`, `topK()`, `toStartOfDay()` etc. |
-| **Explain Plan** | Mode dry-run `EXPLAIN` avant exécution réelle |
-| **Audit système** | Interrogation de `system.query_log` pour identifier les requêtes lentes |
 
 ### Interface utilisateur
 - Chat en streaming temps réel (WebSocket + SSE)
@@ -51,40 +61,43 @@ Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, perm
 - Export Excel des résultats (requête ou session complète)
 - Gestion des connexions DB avec test en direct et explorateur de schéma
 - Configuration LLM HTTP avec détection des modèles disponibles
+- **Export / Import de configuration** (agents, connexions, LLM) au format JSON
 
 ---
 
 ## 🏗 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         React Frontend                           │
-│   [Chat]  [Agents]  [Connexions DB]  [Config LLM]               │
-└───────────────────────┬─────────────────────────────────────────┘
-                        │ HTTP / WebSocket
-┌───────────────────────▼─────────────────────────────────────────┐
-│                      FastAPI Backend                              │
-│  /api/chat  /api/agents  /api/connections  /api/llm-config       │
-│  /api/export                                                      │
-└──────────┬───────────────────────────────┬───────────────────────┘
-           │                               │
-┌──────────▼──────────┐      ┌─────────────▼──────────────────────┐
-│  LangGraph          │      │  JSON Local DB                      │
-│  Orchestrateur      │      │  agents.json / connections.json     │
-│  ┌──────────────┐   │      │  sessions.json / llm_config.json    │
-│  │   Planner    │   │      └─────────────────────────────────────┘
-│  │  Dispatcher  │   │
-│  │   Worker     │◄──┼──── Agents Workers (ClickHouse, Oracle)
-│  │  Corrector   │   │
-│  │  Synthesizer │   │
-│  └──────────────┘   │
-│                     │
-│  Analyste SQL       │
-│  ┌──────────────┐   │
-│  │   Analyst    │   │
-│  │   SQL Tool   │───┼──── ClickHouse / Oracle
-│  │  Synthesizer │   │
-│  └──────────────┘   │
+┌─────────────────────────────────────────────────────────────────────┐
+│                         React Frontend                               │
+│   [Chat]  [Agents]  [Connexions DB]  [Config LLM]  [Export/Import]  │
+└───────────────────────┬─────────────────────────────────────────────┘
+                        │ HTTP / WebSocket / SSE
+┌───────────────────────▼─────────────────────────────────────────────┐
+│                      FastAPI Backend                                  │
+│  /api/chat  /api/agents  /api/connections                            │
+│  /api/llm-config  /api/export  /api/config                           │
+└──────────┬──────────────────────────────────┬────────────────────────┘
+           │                                  │
+┌──────────▼──────────┐         ┌─────────────▼──────────────────────┐
+│  LangGraph          │         │  JSON Local DB                      │
+│                     │         │  agents / connections / sessions     │
+│  ┌──────────────┐   │         │  messages / llm_config              │
+│  │ Orchestrateur│   │         └─────────────────────────────────────┘
+│  │  planner     │   │
+│  │  dispatcher  │◄──┼──── délègue aux agents workers ──────────────┐
+│  │  worker      │   │                                               │
+│  │  corrector   │   │  ┌────────────────┐  ┌──────────────────────┐│
+│  │  synthesizer │   │  │ Analyste SQL   │  │ Analyste de Données  ││
+│  └──────────────┘   │  │  analyst       │  │  planner             ││
+│                     │  │  sql_tool ─────┼──►  sql_executor ───────┼┼─► DB
+│  ┌──────────────┐   │  │  synthesizer   │  │  analyst             ││
+│  │Data Analyst  │   │  └────────────────┘  │  synthesizer         ││
+│  │  planner     │   │                      └──────────────────────┘│
+│  │  sql_executor│   │                                               │
+│  │  analyst     │   └───────────────────────────────────────────────┘
+│  │  synthesizer │
+│  └──────────────┘
 └─────────────────────┘
            │
 ┌──────────▼──────────┐
@@ -97,39 +110,50 @@ Plateforme multi-agents basée sur **LangGraph**, **FastAPI** et **React**, perm
 ### Graphe LangGraph — Orchestrateur
 
 ```
-START
-  │
-  ▼
-[planner] ──────────────────────────────────────────────────────┐
-  │                                                              │
-  ▼                                                              │
-[dispatcher] ──(human required)──► [human_feedback] ─────────┐  │
-  │                                                            │  │
-  ├──(task pending)──► [worker] ──(success)──► [dispatcher] ──┘  │
-  │                        │                                      │
-  │                    (failure)                                  │
-  │                        │                                      │
-  │                        ▼                                      │
-  │                  [corrector] ──► [worker]                     │
-  │                                                               │
-  └──(all done)──► [synthesizer] ──► END ────────────────────────┘
+START → [planner] → [dispatcher] ──(human required)──► [human_feedback] ─┐
+                         │                                                  │
+                    (task pending)                                          │
+                         │                                                  │
+                         ▼                                                  │
+                     [worker] ──────────────────────────────────────────┐  │
+                    /   |   \                                            │  │
+          data_analyst  │  clickhouse/oracle_analyst                    │  │
+               ↓        │          ↓                                    │  │
+        da_pipeline      │    sql_pipeline                               │  │
+                         │                                               │  │
+                    (failure + retry < 3)                                │  │
+                         ▼                                               │  │
+                    [corrector] → [worker]                               │  │
+                                                                         │  │
+                    (all done / failure > 3 retries)                     │  │
+                         ▼                                               │  │
+                    [synthesizer] ──► END ◄───────────────────────────────┘
+```
+
+### Graphe LangGraph — Analyste de Données 🧠
+
+```
+START → [planner] ──(sql_queries + DB connexion)──► [sql_executor] ─┐
+              │                                                        │
+              └──────────(pas de SQL / pas de DB)────────────────────┤
+                                                                       │
+                                                                       ▼
+                                                                 [analyst]
+                                                                       │
+                                                                       ▼
+                                                               [synthesizer] → END
 ```
 
 ### Graphe LangGraph — Analyste SQL
 
 ```
-START
-  │
-  ▼
-[analyst] ──► [sql_tool] ──(success)──────────► [synthesizer] ──► END
-                   │
-                (error, retry < 3)
-                   │
-                   └──────────────────────────► [analyst]  (avec erreur injectée)
-                   │
-                (error, retry >= 3)
-                   │
-                   └──────────────────────────► [error_handler] ──► END
+START → [analyst] → [sql_tool] ──(success)────────► [synthesizer] → END
+                         │
+                    (error, retry < 3)
+                         └──────────────────────► [analyst] (erreur injectée)
+                         │
+                    (error, retry >= 3)
+                         └──────────────────────► [error_handler] → END
 ```
 
 ---
@@ -157,8 +181,8 @@ START
 | **Python** | 3.11+ | [python.org](https://www.python.org/downloads/) — ✅ cocher *"Add to PATH"* |
 | **Node.js** | 18 LTS+ | [nodejs.org](https://nodejs.org/) |
 | **LLM local** | — | [Ollama](https://ollama.ai) / [LM Studio](https://lmstudio.ai) |
-| *(Optionnel)* ClickHouse | — | Pour les agents analystes |
-| *(Optionnel)* Oracle | — | Pour les agents analystes |
+| *(Optionnel)* ClickHouse | — | Pour les agents analystes SQL ClickHouse |
+| *(Optionnel)* Oracle | — | Pour les agents analystes SQL Oracle |
 
 ---
 
@@ -306,12 +330,6 @@ URL  : http://localhost:1234/v1
 Clé  : lm-studio
 ```
 
-**vLLM**
-```
-URL  : http://localhost:8000/v1
-Clé  : (quelconque)
-```
-
 **OpenAI**
 ```
 URL  : https://api.openai.com/v1
@@ -327,17 +345,72 @@ Clé  : sk-xxxxxxxxxxxx
 Agent central qui décompose, délègue, synchronise et synthétise.
 
 **Capacités LangGraph :**
-- Nœud `planner` : analyse l'intention et génère un backlog JSON de sous-tâches
+- Nœud `planner` : analyse l'intention, charge les agents spécialistes disponibles et génère un backlog JSON de sous-tâches avec `agent_id` explicites
 - Nœud `dispatcher` : sélectionne la prochaine tâche exécutable (gestion des dépendances)
-- Nœud `worker` : exécute la tâche avec contexte des résultats précédents
+- Nœud `worker` : route vers le bon pipeline selon l'`agent_type` — **SQL réel ou analyse data**, jamais de réponse LLM inventée
 - Nœud `corrector` : analyse l'erreur et produit des instructions corrigées
 - Nœud `synthesizer` : compile tous les résultats en réponse Markdown structurée
 - Nœud `human_feedback` : point d'interruption LangGraph (`interrupt_before`)
 
+**Délégation réelle :**
+```
+agent_type=clickhouse_analyst → _run_analyst_subtask()    → SQL pipeline avec retry
+agent_type=oracle_analyst     → _run_analyst_subtask()    → SQL pipeline avec retry
+agent_type=data_analyst       → _run_data_analyst_subtask() → planner→sql→analyst→synthesizer
+agent_type=orchestrator       → LLM worker générique
+```
+
 **Exemple de requête :**
 ```
-Analyse les ventes du mois dernier, compare avec N-1,
-identifie les 3 produits les plus performants et génère un résumé exécutif.
+Analyse complète de la table orders :
+profiling des données, top clients par CA ce trimestre,
+et recommandations pour améliorer les performances.
+```
+
+---
+
+### 🧠 Analyste de Données *(nouveau)*
+
+Agent expert en analyse fonctionnelle, statistique, profiling et business intelligence.
+
+**Pipeline LangGraph :**
+```
+planner → [sql_executor →] analyst → synthesizer
+```
+
+**Types d'analyses supportées :**
+
+| Type | Description |
+|------|-------------|
+| `statistical` | Distributions, percentiles P10→P99, outliers 2σ, corrélations |
+| `profiling` | Qualité, taux de NULL, cardinalité, couverture temporelle |
+| `trends` | MoM/YoY, saisonnalité, détection d'anomalies et pics |
+| `kpi` | Calcul et interprétation de métriques business |
+| `business` | Recommandations stratégiques, comparaisons, diagnostic |
+| `mixed` | Combinaison de plusieurs types (analyse la plus complète) |
+
+**Rapport produit :**
+- 📋 Résumé exécutif (2-3 phrases, finding le plus important)
+- 🔍 Insights clés avec chiffres à l'appui (5-7 bullet points)
+- 📊 Analyse détaillée avec tables et métriques
+- 💡 Recommandations actionnables (What → Why → Impact)
+- ⚠️ Limites et points de vigilance
+
+**Connexion DB optionnelle :**
+- **Sans DB** : analyse les données collées dans la conversation, répond aux questions business générales
+- **Avec DB** : génère jusqu'à N requêtes SQL ciblées, les exécute, puis analyse les données réelles
+
+**Exemple de requête (avec DB) :**
+```
+Fais un profiling complet de la table events :
+distribution des types d'événements, taux de NULL,
+évolution sur les 3 derniers mois, top utilisateurs actifs.
+```
+
+**Exemple de requête (sans DB) :**
+```
+Voici mes données de ventes Q3 (coller un CSV ici).
+Analyse les tendances et donne-moi 3 recommandations concrètes.
 ```
 
 ---
@@ -351,13 +424,11 @@ Agent SQL expert ClickHouse avec boucle de retry automatique.
 - ✅ Filtres `WHERE` sur clés de partitionnement / `ORDER BY`
 - ✅ Fonctions natives : `uniq()`, `any()`, `argMax()`, `topK()`
 - ✅ Gestion temps : `toStartOfDay()`, `toYYYYMM()`, `BETWEEN`
-- ✅ Jointures minimisées, dictionnaires privilégiés
 - ✅ SQL formaté (MAJUSCULES, indentation)
 
 **Exemple de requête :**
 ```
-Montre-moi le top 10 des clients par chiffre d'affaires
-sur les 30 derniers jours, groupé par région.
+Top 10 clients par chiffre d'affaires sur les 30 derniers jours, groupé par région.
 ```
 
 ---
@@ -370,7 +441,6 @@ Même architecture que l'analyste ClickHouse, adapté pour Oracle.
 - `TRUNC()`, `TO_DATE()`, `SYSDATE` pour les dates
 - Fonctions analytiques `OVER PARTITION BY`
 - Pagination avec `ROWNUM` / `FETCH FIRST n ROWS ONLY`
-- Jointures avec hints si nécessaire
 
 ---
 
@@ -389,19 +459,34 @@ if re.search(r"\b(DROP|TRUNCATE|DELETE|INSERT|UPDATE|ALTER)\b", sql):
 
 # 3. Injection automatique de LIMIT si absent
 if "LIMIT" not in sql:
-    sql += f"\nLIMIT {row_limit}"  # défaut: 1000
+    sql += f"\nLIMIT {row_limit}"  # défaut: 1000 (analyste SQL) / 5000 (data analyst)
 
 # 4. Plafonnement du LIMIT existant si > hard cap
-# 5. Retour de l'erreur ClickHouse brute pour auto-correction
+# 5. Retour de l'erreur DB brute pour auto-correction LLM
 ```
 
 | Guardrail | Comportement |
 |-----------|-------------|
 | Opérations bloquées | DROP, TRUNCATE, DELETE, INSERT, UPDATE, CREATE, ALTER |
-| Limite de lignes | Injectée automatiquement (configurable, défaut 1000) |
+| Limite de lignes | Injectée automatiquement (configurable par agent) |
 | Anti-injection | Validation regex + échappement client |
 | Feedback d'erreur | Erreur DB complète retournée au LLM pour correction |
 | Dry-run | Mode `EXPLAIN` disponible avant exécution réelle |
+
+---
+
+## 📤 Export / Import de configuration
+
+La sidebar propose un bouton **Export / Import config** qui permet de sauvegarder et restaurer l'intégralité de la configuration de la plateforme.
+
+### Export
+- Télécharge un fichier JSON contenant : agents, connexions DB, configuration LLM
+- Option d'inclure ou masquer les mots de passe des connexions
+
+### Import
+- **Mode Merge** *(défaut)* : ajoute les nouvelles entrées sans écraser l'existant
+- **Mode Replace** : remplace entièrement la configuration (avec avertissement)
+- Rapport d'import : nombre d'éléments créés par catégorie
 
 ---
 
@@ -427,6 +512,8 @@ Documentation interactive disponible sur **`/api/docs`** (Swagger UI).
 | `GET` | `/api/chat/sessions/{agent_id}` | Sessions d'un agent |
 | `POST` | `/api/export/excel/query` | Exporter une requête en Excel |
 | `POST` | `/api/export/excel/session/{id}` | Exporter une session en Excel |
+| `GET` | `/api/config/export` | Exporter la configuration complète (JSON) |
+| `POST` | `/api/config/import` | Importer une configuration (merge ou replace) |
 
 ### Exemple — Chat streaming
 
@@ -435,14 +522,21 @@ curl -X POST http://localhost:8000/api/chat/message \
   -H "Content-Type: application/json" \
   -d '{
     "agent_id": "uuid-de-l-agent",
-    "message": "Top 10 produits ce mois ?",
+    "message": "Analyse statistique de la table orders",
     "stream": true
   }'
 ```
 
-Réponse (NDJSON stream) :
+Réponse NDJSON (data analyst) :
 ```json
-{"type": "token", "content": "Je vais analyser..."}
+{"type": "token", "content": "Plan d'analyse créé : Mixed analysis [statistical + trends]"}
+{"type": "query_result", "row_count": 500, "columns": ["date","revenue"], "sql": "SELECT ...", "description": "Évolution du CA quotidien"}
+{"type": "token", "content": "## 📋 Résumé Exécutif\n\nLe CA moyen journalier est de..."}
+{"type": "final", "content": "## 📋 Résumé Exécutif\n\n..."}
+```
+
+Réponse NDJSON (analyste SQL) :
+```json
 {"type": "sql", "content": "SELECT product_id, sum(revenue)..."}
 {"type": "query_result", "row_count": 10, "columns": [...], "rows": [...]}
 {"type": "final", "content": "## Résultats\n\nVoici le top 10..."}
@@ -456,53 +550,50 @@ Réponse (NDJSON stream) :
 Python_Agent_03/
 │
 ├── backend/
-│   ├── __init__.py
 │   ├── main.py                    # FastAPI app, CORS, routing statique
-│   ├── agents/
-│   │   └── __init__.py
 │   ├── database/
 │   │   └── json_db.py             # DB JSON thread-safe (atomic write)
 │   ├── graphs/
-│   │   ├── state.py               # TypedDict états LangGraph
-│   │   ├── llm_factory.py         # Build ChatOpenAI depuis config DB
-│   │   ├── orchestrator_graph.py  # Graphe orchestrateur complet
-│   │   └── analyst_graph.py       # Graphe analyste SQL avec retry
+│   │   ├── state.py               # TypedDicts : OrchestratorState, DataAnalystState, AnalystState
+│   │   ├── llm_factory.py         # Build ChatOpenAI depuis config DB (lazy loading)
+│   │   ├── orchestrator_graph.py  # Graphe orchestrateur (planner→dispatcher→worker→corrector→synthesizer)
+│   │   ├── data_analyst_graph.py  # Graphe analyste data (planner→sql_executor→analyst→synthesizer)
+│   │   └── analyst_graph.py       # Graphe analyste SQL avec retry loop
 │   ├── models/
-│   │   ├── agent.py               # AgentConfig, AgentCreate, AgentType
+│   │   ├── agent.py               # AgentConfig, AgentCreate, AgentType (orchestrator/data_analyst/clickhouse/oracle/custom)
 │   │   ├── connection.py          # ConnectionConfig, ConnectionType
 │   │   ├── llm_config.py          # LLMConfig, LLMProvider
 │   │   └── chat.py                # ChatMessage, ChatSession, ChatRequest
 │   ├── routers/
-│   │   ├── agents.py              # CRUD agents + templates
+│   │   ├── agents.py              # CRUD agents + prompts par défaut
 │   │   ├── connections.py         # CRUD connexions + test + schéma
-│   │   ├── chat.py                # REST + WebSocket + sessions
-│   │   ├── llm_config.py          # Config LLM + test + modèles
-│   │   └── export.py              # Export Excel (requête / session)
+│   │   ├── chat.py                # REST + WebSocket + sessions (routing par agent_type)
+│   │   ├── llm_config.py          # Config LLM + test + modèles disponibles
+│   │   ├── export.py              # Export Excel (requête / session)
+│   │   └── config.py              # Export / Import configuration JSON
 │   └── tools/
-│       ├── sql_clickhouse.py      # ClickHouse tool (guardrails, schema, audit)
+│       ├── sql_clickhouse.py      # ClickHouse tool (guardrails, schema, list_tables, audit)
 │       └── sql_oracle.py          # Oracle tool (guardrails, schema)
 │
 ├── frontend/
+│   ├── index.html                 # Entry point Vite (racine du projet)
 │   ├── vite.config.js             # Proxy /api → :8000
 │   ├── package.json
 │   └── src/
 │       ├── App.jsx                # Router principal
-│       ├── main.jsx
 │       ├── services/
-│       │   └── api.js             # Axios + streamChat() generator
-│       ├── styles/
-│       │   ├── global.css         # Tokens CSS, composants utilitaires
-│       │   └── layout.css         # Sidebar, pages, cards
+│       │   └── api.js             # Axios + streamChat() + configApi
 │       ├── components/
-│       │   ├── Sidebar.jsx        # Navigation + liste agents
-│       │   ├── AgentModal.jsx     # Formulaire création/édition agent
-│       │   ├── ConnectionModal.jsx# Formulaire connexion DB
+│       │   ├── Sidebar.jsx        # Navigation + liste agents (🎯📊🔮🧠🤖)
+│       │   ├── AgentModal.jsx     # Formulaire création/édition (5 types d'agents)
+│       │   ├── ConnectionModal.jsx# Formulaire connexion DB (normalisation host auto)
+│       │   ├── ConfigModal.jsx    # Export / Import configuration JSON
 │       │   ├── SchemaExplorer.jsx # Explorateur de tables/colonnes
 │       │   ├── DataTable.jsx      # Tableau paginé + export Excel
 │       │   └── Toast.jsx          # Notifications toast
 │       └── pages/
 │           ├── ChatPage.jsx       # Chat streaming + sessions
-│           ├── AgentsPage.jsx     # Gestion des agents
+│           ├── AgentsPage.jsx     # Gestion des agents (cards avec type + icône)
 │           ├── ConnectionsPage.jsx# Gestion des connexions DB
 │           └── LLMConfigPage.jsx  # Configuration LLM HTTP
 │
@@ -510,16 +601,19 @@ Python_Agent_03/
 │   └── .gitkeep
 │
 ├── requirements.txt
-├── start.sh                       # Démarrage production
-├── start_dev.sh                   # Démarrage développement
+├── install.bat                    # Installation complète Windows
+├── launch.bat                     # Lancement production Windows
+├── launch_dev.bat                 # Lancement développement Windows
+├── stop.bat                       # Arrêt des serveurs Windows
+├── create_shortcut.vbs            # Création raccourcis bureau Windows
+├── start.sh                       # Démarrage production Linux/macOS
+├── start_dev.sh                   # Démarrage développement Linux/macOS
 └── README.md
 ```
 
 ---
 
 ## 🗄️ Bases de données locales (JSON)
-
-La plateforme stocke toutes ses configurations dans des fichiers JSON dans `data/` :
 
 | Fichier | Contenu |
 |---------|---------|
@@ -535,15 +629,10 @@ Les écritures sont atomiques (fichier `.tmp` → remplacement) pour éviter la 
 
 ## 📤 Export Excel
 
-Deux modes d'export disponibles :
-
-### Export d'une requête
-- Feuille **Data** : résultats avec headers colorés, colonnes auto-dimensionnées
-- Feuille **Metadata** : date d'export, nombre de lignes, SQL utilisé
-
-### Export d'une session complète
-- Feuille **Chat History** : tous les messages (timestamp, rôle, contenu)
-- Feuilles **Query_N** : données de chaque requête exécutée dans la session
+| Mode | Feuilles générées |
+|------|------------------|
+| **Requête** | **Data** : résultats avec headers colorés, colonnes auto-dimensionnées · **Metadata** : date, SQL, row count |
+| **Session** | **Chat History** : tous les messages (timestamp, rôle, contenu) · **Query_N** : données de chaque requête exécutée |
 
 ---
 
@@ -551,14 +640,18 @@ Deux modes d'export disponibles :
 
 ### Ajouter un nouvel agent
 
-1. Créer un nœud dans `backend/graphs/` ou étendre `analyst_graph.py`
-2. Ajouter le type dans `backend/models/agent.py` → `AgentType`
-3. Ajouter le prompt par défaut dans `backend/routers/agents.py` → `DEFAULT_PROMPTS`
-4. Mettre à jour `AGENT_TYPES` dans `frontend/src/components/AgentModal.jsx`
+1. Créer le graphe dans `backend/graphs/<nom>_graph.py` (nœuds + routing + `build_<nom>_graph()`)
+2. Ajouter le `TypedDict` d'état dans `backend/graphs/state.py`
+3. Ajouter le type dans `backend/models/agent.py` → `AgentType`
+4. Ajouter le prompt par défaut dans `backend/routers/agents.py` → `DEFAULT_PROMPTS`
+5. Ajouter le runner SSE dans `backend/routers/chat.py` → `_run_<nom>()` + `_get_runner()`
+6. Mettre à jour `AGENT_TYPES` et `DEFAULT_PROMPTS` dans `frontend/src/components/AgentModal.jsx`
+7. Ajouter l'entrée dans `TYPE_LABELS` dans `frontend/src/pages/AgentsPage.jsx`
+8. Ajouter l'icône dans `agentIcon()` dans `frontend/src/components/Sidebar.jsx`
 
 ### Ajouter un nouveau type de connexion
 
-1. Créer un tool dans `backend/tools/sql_<db>.py` (implémenter `execute`, `get_schema`, `test_connection`)
+1. Créer un tool dans `backend/tools/sql_<db>.py` (implémenter `execute`, `get_schema`, `list_tables`, `test_connection`)
 2. Ajouter le type dans `backend/models/connection.py` → `ConnectionType`
 3. Enregistrer le tool dans `backend/routers/connections.py` → `_build_tool()`
 
