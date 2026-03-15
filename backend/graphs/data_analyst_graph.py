@@ -161,7 +161,9 @@ Each recommendation should include: What to do → Why (data evidence) → Expec
 - What additional data would improve this analysis
 
 ## 🔢 Actions Effectuées
-Numbered list of every concrete action taken during this analysis (e.g. "1. Analyzed the user question", "2. Planned SQL queries", "3. Executed N SQL queries", "4. Performed statistical analysis", "5. Generated business recommendations").
+Numbered list of every concrete action taken during this analysis.
+Include for each action which agent executed it (the agent name is provided in the context).
+Format: "N. <action description> → **{agent_label}**"
 
 ## 🎯 Score de Confiance
 A confidence score from 0 to 100 reflecting how complete, accurate and data-backed this analysis is.
@@ -512,12 +514,17 @@ def synthesizer_node(state: DataAnalystState) -> Dict[str, Any]:
         - `final_answer` : rapport Markdown complet retourné à l'utilisateur.
         - `messages` : même contenu ajouté au fil de messages.
     """
+    from backend.database import db, COLL_AGENTS
     llm = build_llm()
+    agent_cfg = db.get(COLL_AGENTS, state.get("agent_id", "")) or {}
+    agent_label = agent_cfg.get("name") or state.get("agent_id") or "Agent Data Analyst"
 
+    system = SYNTHESIZER_SYSTEM.replace("{agent_label}", agent_label)
     messages = [
-        SystemMessage(content=SYNTHESIZER_SYSTEM),
+        SystemMessage(content=system),
         HumanMessage(
             content=(
+                f"## Agent\n**{agent_label}**\n\n"
                 f"## Question originale\n{state['user_question']}\n\n"
                 f"## Analyse technique\n{state.get('analysis_output', '')}"
             )

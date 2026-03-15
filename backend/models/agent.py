@@ -22,6 +22,7 @@ class AgentCreate(BaseModel):
     toolkit_id: Optional[str] = Field(None, description="Toolkit to use for tool selection/customization")
     system_prompt: Optional[str] = None
     max_retries: int = Field(default=3, ge=1, le=10)
+    max_iterations: int = Field(default=10, ge=1, le=20, description="Max consecutive actions for orchestrator")
     row_limit: int = Field(default=1000, ge=1, le=50000, description="Max rows returned from DB queries")
     extra_config: Dict[str, Any] = Field(default_factory=dict)
 
@@ -33,6 +34,7 @@ class AgentUpdate(BaseModel):
     toolkit_id: Optional[str] = None
     system_prompt: Optional[str] = None
     max_retries: Optional[int] = None
+    max_iterations: Optional[int] = None
     row_limit: Optional[int] = None
     extra_config: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
@@ -47,6 +49,7 @@ class AgentConfig(BaseModel):
     toolkit_id: Optional[str] = Field(None, description="Toolkit to use for tool selection/customization")
     system_prompt: Optional[str] = None
     max_retries: int = 3
+    max_iterations: int = 10
     row_limit: int = 1000
     extra_config: Dict[str, Any] = Field(default_factory=dict)
     is_active: bool = True

@@ -109,7 +109,9 @@ Given a SQL query result and the original question, provide a structured Markdow
 Then ALWAYS end your response with these two sections:
 
 ## 🔢 Actions Effectuées
-Numbered list of every concrete action taken to answer this question (e.g. "1. Listed available tables", "2. Retrieved schema for table X", "3. Executed SQL query", "4. Synthesized results").
+Numbered list of every concrete action taken to answer this question.
+Include for each action which agent/tool executed it (this agent's name is provided in the context below).
+Format: "N. <action description> → **{agent_label}**"
 
 ## 🎯 Score de Confiance
 A confidence score from 0 to 100 for the accuracy and completeness of this answer, with a one-line justification.
@@ -553,17 +555,24 @@ def synthesizer_node(state: AnalystState) -> Dict[str, Any]:
     Utilisé par l'orchestrateur dans _run_analyst_subtask().
     Transforme le résultat brut en réponse Markdown narrative.
     """
+    from backend.database import db, COLL_AGENTS
     llm = build_llm()
+    # Résoudre le nom de l'agent pour l'inclure dans le prompt
+    agent_cfg = db.get(COLL_AGENTS, state.get("agent_id", "")) or {}
+    agent_label = agent_cfg.get("name") or state.get("agent_id") or "Agent SQL"
+
     result = state.get("query_result", {})
     result_summary = (
         result.get("markdown_table", "No data")
         if result.get("success")
         else f"Query failed: {result.get('error')}"
     )
+    system = SYNTHESIZER_SYSTEM.replace("{agent_label}", agent_label)
     messages = [
-        SystemMessage(content=SYNTHESIZER_SYSTEM),
+        SystemMessage(content=system),
         HumanMessage(
-            content=f"Question: {state['user_question']}\n\n"
+            content=f"Agent: **{agent_label}**\n\n"
+            f"Question: {state['user_question']}\n\n"
             f"SQL used:\n```sql\n{state.get('generated_sql', '')}\n```\n\n"
             f"Result:\n{result_summary}\n\n"
             + (f"⚠️ Warning: {result.get('warning')}" if result.get("warning") else "")

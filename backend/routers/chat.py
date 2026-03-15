@@ -123,7 +123,7 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
         "final_answer": None,
         "awaiting_human": False,
         "iteration": 0,
-        "max_iterations": agent_cfg.get("max_retries", 3) * 3,
+        "max_iterations": agent_cfg.get("max_iterations", 10),
         "agent_id": agent_id,
         "session_id": session_id,
     }

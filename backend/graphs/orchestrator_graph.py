@@ -140,11 +140,13 @@ accurately — do NOT replace data with placeholders or templates.
 Always end your response with these two sections:
 
 ## 🔢 Actions Effectuées
-Numbered list of every sub-task completed by the orchestrator during this session (derive it from the worker results provided). Example: "1. Analysed table X via ClickHouse agent", "2. Generated business insights via data analyst", "3. Compiled final synthesis".
+Numbered list of every sub-task completed, based on the worker results provided.
+For each action include: the task description AND which agent executed it (use the agent_name and agent_type fields from worker results).
+Format each line as: "N. <task_description> → **<agent_name>** (<agent_type>)"
 
 ## 🎯 Score de Confiance
 A global confidence score from 0 to 100 reflecting how reliably this multi-agent workflow answered the user's request.
-Format: **Score : XX/100** — <one-line justification referencing the tasks completed>"""
+Format: **Score : XX/100** — <one-line justification referencing tasks completed and agents involved>"""
 # La mention "REAL data" est critique : sans elle, certains LLMs tendent à
 # réécrire les données tabulaires avec des valeurs génériques.
 
@@ -751,11 +753,15 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
     # ── Chemin A1 : délégation au pipeline data analyst (analyse + business) ─
     if agent_type == "data_analyst":
         agent_id = task.get("agent_id") or _find_analyst_agent(agent_type)
+        agent_cfg = db.get(COLL_AGENTS, agent_id) if agent_id else None
+        agent_name = agent_cfg.get("name", agent_id) if agent_cfg else agent_id or "data_analyst"
         if not agent_id:
             result_entry = {
                 "task_id": task["id"],
                 "task_description": task["description"],
                 "agent_type": agent_type,
+                "agent_id": None,
+                "agent_name": "—",
                 "result": "❌ No active data_analyst agent found. Please create and configure one.",
                 "success": False,
                 "error": "No active data_analyst agent available.",
@@ -767,6 +773,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                     "task_id": task["id"],
                     "task_description": task["description"],
                     "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                     "result": subtask_result["result"],
                     "success": subtask_result["success"],
                     "data_fetched": subtask_result.get("data_fetched", False),
@@ -780,6 +788,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                     "task_id": task["id"],
                     "task_description": task["description"],
                     "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                     "result": f"❌ Data analyst execution error: {e}",
                     "success": False,
                     "error": str(e),
@@ -797,12 +807,16 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
     if agent_type in ("clickhouse_analyst", "oracle_analyst"):
         # Résolution de l'agent : priorité à l'agent_id suggéré par le planner
         agent_id = task.get("agent_id") or _find_analyst_agent(agent_type)
+        agent_cfg = db.get(COLL_AGENTS, agent_id) if agent_id else None
+        agent_name = agent_cfg.get("name", agent_id) if agent_cfg else agent_id or agent_type
         if not agent_id:
             # Aucun agent actif du bon type → erreur explicite
             result_entry = {
                 "task_id": task["id"],
                 "task_description": task["description"],
                 "agent_type": agent_type,
+                "agent_id": None,
+                "agent_name": "—",
                 "result": f"❌ No active {agent_type} agent found. Please create and configure one.",
                 "success": False,
                 "error": f"No active {agent_type} agent available.",
@@ -815,6 +829,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                     "task_id": task["id"],
                     "task_description": task["description"],
                     "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                     "result": subtask_result["result"],        # narrative Markdown avec vraies données
                     "success": subtask_result["success"],
                     "sql_executed": subtask_result.get("sql_executed"),  # pour traçabilité
@@ -829,6 +845,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                     "task_id": task["id"],
                     "task_description": task["description"],
                     "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                     "result": f"❌ Analyst execution error: {e}",
                     "success": False,
                     "error": str(e),
@@ -846,6 +864,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
     # ── Chemin A3 : délégation au pipeline report_writer ─────────────────────
     if agent_type == "report_writer":
         agent_id = task.get("agent_id") or _find_analyst_agent("report_writer")
+        agent_cfg = db.get(COLL_AGENTS, agent_id) if agent_id else None
+        agent_name = agent_cfg.get("name", agent_id) if agent_cfg else "Rédacteur PDF"
         # Build session_context from all prior worker results
         session_context = "\n\n".join(
             f"**{r['task_description']}**\n{r['result']}"
@@ -858,6 +878,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                 "task_id": task["id"],
                 "task_description": task["description"],
                 "agent_type": agent_type,
+                "agent_id": agent_id,
+                "agent_name": agent_name,
                 "result": subtask_result["result"],
                 "success": subtask_result["success"],
                 "report_id": subtask_result.get("report_id"),
@@ -870,6 +892,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                 "task_id": task["id"],
                 "task_description": task["description"],
                 "agent_type": agent_type,
+                "agent_id": agent_id if agent_id else None,
+                "agent_name": agent_name,
                 "result": f"❌ Report generation error: {e}",
                 "success": False,
                 "error": str(e),
@@ -908,6 +932,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
             "task_id": task["id"],
             "task_description": task["description"],
             "agent_type": agent_type,
+            "agent_id": state.get("agent_id"),
+            "agent_name": "Orchestrateur",
             "result": response.content,
             "success": True,
         }
@@ -922,6 +948,8 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
             "task_id": task["id"],
             "task_description": task["description"],
             "agent_type": agent_type,
+            "agent_id": state.get("agent_id"),
+            "agent_name": "Orchestrateur",
             "result": f"ERROR: {e}",
             "success": False,
             "error": str(e),
@@ -1062,18 +1090,26 @@ def route_after_dispatcher(state: OrchestratorState) -> Literal["worker", "synth
 
     Priorités de routage :
       1. "human_feedback" si une approbation humaine est requise.
-      2. "synthesizer" si plus aucune tâche n'est disponible (current_task=None)
-         ou si la limite d'itérations est atteinte (anti-boucle infinie).
-      3. "worker" dans tous les autres cas (tâche disponible et limite non atteinte).
+      2. "synthesizer" si plus aucune tâche n'est disponible (current_task=None).
+      3. "synthesizer" si la limite max_iterations est atteinte (anti-boucle).
+      4. "worker" sinon.
     """
     if state.get("awaiting_human"):
         return "human_feedback"
+
     if state.get("current_task") is None:
         # Backlog épuisé → tous les résultats sont disponibles pour la synthèse
         return "synthesizer"
-    if state.get("iteration", 0) >= state.get("max_iterations", 10):
-        # Limite d'itérations atteinte → forcer la synthèse avec les résultats disponibles
+
+    max_iter = state.get("max_iterations", 10)
+    current_iter = state.get("iteration", 0)
+    if current_iter >= max_iter:
+        logger.info(
+            "Orchestrator hit max_iterations (%d/%d) — forcing synthesizer.",
+            current_iter, max_iter,
+        )
         return "synthesizer"
+
     return "worker"
 
 
@@ -1083,36 +1119,61 @@ def route_after_worker(state: OrchestratorState) -> Literal["dispatcher", "corre
 
     Priorités de routage :
       1. "corrector" si la dernière tâche a échoué ET qu'il reste des tentatives
-         disponibles (< 3 échecs pour cette même tâche).
-      2. "synthesizer" si toutes les tâches du backlog sont dans worker_results.
+         (< max_retries échecs pour cette même tâche).
+      2. "synthesizer" si toutes les tâches du backlog ont un résultat,
+         OU si aucune tâche éligible n'existe (dépendances non satisfaites = blocage).
       3. "dispatcher" pour passer à la prochaine tâche du backlog.
 
-    Note sur le comptage des retries :
-        Le nombre de retries est calculé dynamiquement en comptant combien de
-        fois le même `task_id` apparaît dans `worker_results`. Cela permet de
-        gérer les retries sans champ dédié dans l'état.
+    Anti-doublons :
+        `completed_ids` est un SET de task_id déjà présents dans worker_results.
+        Le dispatcher ne sélectionnera jamais une tâche déjà dans ce set.
+
+    Anti-blocage (deadlock sur dépendances) :
+        Si toutes les tâches restantes ont des dépendances non satisfaites, aucune
+        ne sera éligible → le dispatcher met current_task=None → on synthétise
+        avec ce qu'on a.
     """
     results = state.get("worker_results", [])
     backlog = state.get("task_backlog", [])
-    completed_ids = {r["task_id"] for r in results}
+    # Tâches ayant au moins une entrée dans worker_results (succès ou échec)
+    seen_ids = {r["task_id"] for r in results}
+    # Tâches avec au moins un résultat RÉUSSI (pour évaluer les dépendances)
+    success_ids = {r["task_id"] for r in results if r.get("success")}
 
-    # Vérification d'un échec sur la dernière tâche
+    # ── Gestion des échecs avec retry ──────────────────────────────────────
     if results and not results[-1].get("success", True):
-        # Compte le nombre de tentatives pour cette tâche (même task_id)
-        retry_count = sum(1 for r in results if r["task_id"] == results[-1]["task_id"])
+        last_task_id = results[-1]["task_id"]
+        retry_count = sum(1 for r in results if r["task_id"] == last_task_id)
         max_retries = 3
         if retry_count < max_retries:
-            # Des tentatives restent → correction + retry
             return "corrector"
-        # Sinon : max retries atteints → on considère la tâche "terminée" (avec échec)
-        # et on passe aux tâches suivantes ou à la synthèse
+        # Max retries atteints pour cette tâche → on la considère terminée (échec)
+        logger.warning(
+            "Task '%s' failed after %d retries — skipping.", last_task_id, retry_count
+        )
 
-    # Toutes les tâches ont au moins un résultat → synthèse finale
-    all_done = all(t["id"] in completed_ids for t in backlog)
-    if all_done:
+    # ── Toutes les tâches backlog ont un résultat → synthèse ───────────────
+    all_attempted = all(t["id"] in seen_ids for t in backlog)
+    if all_attempted:
         return "synthesizer"
 
-    # Il reste des tâches → retour au dispatcher
+    # ── Détection de blocage : tâches restantes avec dépendances non satisfaites ─
+    remaining = [t for t in backlog if t["id"] not in seen_ids]
+    # Une tâche est éligible si toutes ses dépendances sont dans success_ids
+    any_eligible = any(
+        all(dep in success_ids for dep in t.get("depends_on", []))
+        for t in remaining
+    )
+    if not any_eligible:
+        # Aucune tâche ne peut avancer → synthèse avec ce qu'on a
+        logger.warning(
+            "No eligible tasks remaining (dependency deadlock or all failed). "
+            "Forcing synthesizer. Remaining: %s",
+            [t["id"] for t in remaining],
+        )
+        return "synthesizer"
+
+    # ── Il reste des tâches éligibles → retour au dispatcher ───────────────
     return "dispatcher"
 
 

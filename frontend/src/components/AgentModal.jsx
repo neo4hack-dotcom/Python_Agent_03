@@ -52,6 +52,7 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
     toolkit_id: agent?.toolkit_id || '',
     system_prompt: agent?.system_prompt || DEFAULT_PROMPTS.orchestrator,
     max_retries: agent?.max_retries || 3,
+    max_iterations: agent?.max_iterations || 10,
     row_limit: agent?.row_limit || 1000,
     extra_config: agent?.extra_config || {},
   })
@@ -244,6 +245,27 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
                   <span className="text-sm text-muted">Nombre maximum de lignes retournées par requête</span>
                 </div>
               </div>
+
+              {form.type === 'orchestrator' && (
+                <div className="form-group">
+                  <label className="form-label">Actions consécutives max <span style={{ color: 'var(--accent)', fontWeight: 700 }}>(orchestrateur)</span></label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <input
+                      className="input"
+                      type="range" min="1" max="20"
+                      value={form.max_iterations}
+                      onChange={(e) => setForm((f) => ({ ...f, max_iterations: parseInt(e.target.value) }))}
+                      style={{ flex: 1, accentColor: 'var(--accent)' }}
+                    />
+                    <span style={{ minWidth: 32, textAlign: 'center', fontWeight: 700, color: 'var(--accent)', fontSize: 18 }}>
+                      {form.max_iterations}
+                    </span>
+                  </div>
+                  <span className="text-sm text-muted">
+                    Nombre maximum de sous-tâches que l'orchestrateur peut enchaîner. L'agent s'arrête dès que la tâche est terminée — cette limite évite les boucles infinies. Recommandé : 8–12.
+                  </span>
+                </div>
+              )}
 
               {['clickhouse_analyst', 'oracle_analyst'].includes(form.type) && (
                 <div className="form-group">
