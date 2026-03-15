@@ -22,7 +22,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import Annotated, TypedDict
 from langgraph.graph.message import add_messages
@@ -548,38 +548,39 @@ ORDER BY {period_fn}"""
 
 def llm_analysis_node(state: DataQualityState) -> Dict:
     """Call LLM to analyse collected stats and generate DQ recommendations."""
-    llm = build_llm(state["agent_id"])
+    try:
+        llm = build_llm()
 
-    column_stats = state.get("column_stats") or {}
-    vol_stats = state.get("volumetric_stats")
-    schema_info = state.get("schema_info") or {}
+        column_stats = state.get("column_stats") or {}
+        vol_stats = state.get("volumetric_stats")
+        schema_info = state.get("schema_info") or {}
 
-    # Build a compact JSON payload for the LLM
-    payload = {
-        "table": state["table"],
-        "sample_size": state.get("sample_size", 0),
-        "row_filter": state.get("row_filter"),
-        "columns": [],
-    }
-    for col, stats in column_stats.items():
-        entry = {
-            "name": col,
-            "type": stats.get("col_type", "?"),
-            "raw_type": schema_info.get(col, {}).get("raw_type", ""),
-            "stats": {k: (round(v, 4) if isinstance(v, float) else v)
-                       for k, v in stats.items()
-                       if k not in ("col_type", "top_values") and v is not None},
+        # Build a compact JSON payload for the LLM
+        payload = {
+            "table": state["table"],
+            "sample_size": state.get("sample_size", 0),
+            "row_filter": state.get("row_filter"),
+            "columns": [],
         }
-        # Include top_values but truncate
-        tv = stats.get("top_values")
-        if tv:
-            entry["top_values"] = [str(x) for x in (tv[:10] if isinstance(tv, list) else [tv])]
-        payload["columns"].append(entry)
+        for col, stats in column_stats.items():
+            entry = {
+                "name": col,
+                "type": stats.get("col_type", "?"),
+                "raw_type": schema_info.get(col, {}).get("raw_type", ""),
+                "stats": {k: (round(v, 4) if isinstance(v, float) else v)
+                           for k, v in stats.items()
+                           if k not in ("col_type", "top_values") and v is not None},
+            }
+            # Include top_values but truncate
+            tv = stats.get("top_values")
+            if tv:
+                entry["top_values"] = [str(x) for x in (tv[:10] if isinstance(tv, list) else [tv])]
+            payload["columns"].append(entry)
 
-    if vol_stats and not vol_stats.get("error"):
-        payload["volumetric_analysis"] = vol_stats
+        if vol_stats and not vol_stats.get("error"):
+            payload["volumetric_analysis"] = vol_stats
 
-    user_msg = f"""Voici les statistiques de profiling de la table **{state['table']}** :
+        user_msg = f"""Voici les statistiques de profiling de la table **{state['table']}** :
 
 ```json
 {json.dumps(payload, ensure_ascii=False, indent=2, default=str)}
@@ -587,17 +588,24 @@ def llm_analysis_node(state: DataQualityState) -> Dict:
 
 Analyse la qualité des données et produis un rapport structuré selon les instructions."""
 
-    messages = [
-        {"role": "system", "content": DQ_SYSTEM_PROMPT},
-        {"role": "user", "content": user_msg},
-    ]
-    response = llm.invoke(messages)
-    analysis = response.content if hasattr(response, "content") else str(response)
+        messages = [
+            SystemMessage(content=DQ_SYSTEM_PROMPT),
+            HumanMessage(content=user_msg),
+        ]
+        response = llm.invoke(messages)
+        analysis = response.content if hasattr(response, "content") else str(response)
 
-    return {
-        "llm_analysis": analysis,
-        "messages": [AIMessage(content="[DQ] Analyse LLM terminée")],
-    }
+        return {
+            "llm_analysis": analysis,
+            "messages": [AIMessage(content="[DQ] Analyse LLM terminée")],
+        }
+    except Exception as e:
+        logger.error("llm_analysis_node error: %s", e, exc_info=True)
+        return {
+            "llm_analysis": f"⚠️ Erreur lors de l'analyse LLM : {e}",
+            "last_error": str(e),
+            "messages": [AIMessage(content=f"[DQ] Erreur analyse LLM : {e}")],
+        }
 
 
 def synthesizer_node(state: DataQualityState) -> Dict:

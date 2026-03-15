@@ -271,7 +271,7 @@ def fetch_schemas_node(state: DataDictionaryState) -> Dict:
 
 def llm_doc_node(state: DataDictionaryState) -> Dict:
     """Call LLM for each table to generate structured business documentation."""
-    llm = build_llm(state["agent_id"])
+    llm = build_llm()
     language = state.get("language", "fr")
     system_prompt = SYSTEM_PROMPT_FR if language == "fr" else SYSTEM_PROMPT_EN
     table_schemas = state.get("table_schemas") or {}

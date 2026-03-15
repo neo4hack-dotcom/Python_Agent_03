@@ -502,7 +502,9 @@ async def _run_data_quality(agent_id: str, session_id: str, message: str) -> Asy
     import json as _json
 
     graph = _get_data_quality()
-    config = {"configurable": {"thread_id": session_id}}
+    # Use a unique thread_id to avoid MemorySaver state collision on re-runs
+    thread_id = f"dq_{session_id}_{uuid.uuid4().hex[:8]}"
+    config = {"configurable": {"thread_id": thread_id}}
 
     # Parse the structured JSON message from the frontend form
     try:
@@ -530,7 +532,22 @@ async def _run_data_quality(agent_id: str, session_id: str, message: str) -> Asy
     }
 
     try:
+        final_answer_from_stream = None
+        col_stats_from_stream = None
+        vol_stats_from_stream = None
+        last_error_from_stream = None
+
         async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            # Track state values as they arrive
+            if event.get("final_answer"):
+                final_answer_from_stream = event["final_answer"]
+            if event.get("column_stats"):
+                col_stats_from_stream = event["column_stats"]
+            if event.get("volumetric_stats") and not event["volumetric_stats"].get("error"):
+                vol_stats_from_stream = event["volumetric_stats"]
+            if event.get("last_error"):
+                last_error_from_stream = event["last_error"]
+
             msgs = event.get("messages", [])
             if msgs:
                 last = msgs[-1]
@@ -538,19 +555,27 @@ async def _run_data_quality(agent_id: str, session_id: str, message: str) -> Asy
                     yield _json.dumps({"type": "dq_progress", "content": last.content}) + "\n"
                     await asyncio.sleep(0)
 
-        final_state = graph.get_state(config)
-        vals = final_state.values
-        if vals.get("last_error"):
-            yield _json.dumps({"type": "error", "content": vals["last_error"]}) + "\n"
+        # Use stream values as primary source (more reliable than get_state with MemorySaver)
+        try:
+            final_state = graph.get_state(config)
+            vals = final_state.values if final_state else {}
+        except Exception:
+            vals = {}
+
+        last_error = vals.get("last_error") or last_error_from_stream
+        if last_error:
+            yield _json.dumps({"type": "error", "content": last_error}) + "\n"
             return
-        final_answer = vals.get("final_answer", "")
+
+        final_answer = vals.get("final_answer") or final_answer_from_stream or ""
         if final_answer:
             yield _json.dumps({"type": "final", "content": final_answer}) + "\n"
-        # Emit column stats for the frontend table view
-        col_stats = vals.get("column_stats")
+
+        col_stats = vals.get("column_stats") or col_stats_from_stream
         if col_stats:
             yield _json.dumps({"type": "dq_stats", "stats": col_stats}) + "\n"
-        vol_stats = vals.get("volumetric_stats")
+
+        vol_stats = vals.get("volumetric_stats") or vol_stats_from_stream
         if vol_stats and not vol_stats.get("error"):
             yield _json.dumps({"type": "dq_volumetric", "stats": vol_stats}) + "\n"
     except Exception as e:
@@ -563,7 +588,9 @@ async def _run_data_dictionary(agent_id: str, session_id: str, message: str) -> 
     import json as _json
 
     graph = _get_data_dictionary()
-    config = {"configurable": {"thread_id": session_id}}
+    # Use a unique thread_id to avoid MemorySaver state collision on re-runs
+    thread_id = f"dd_{session_id}_{uuid.uuid4().hex[:8]}"
+    config = {"configurable": {"thread_id": thread_id}}
 
     try:
         params = _json.loads(message)
@@ -587,7 +614,18 @@ async def _run_data_dictionary(agent_id: str, session_id: str, message: str) -> 
     }
 
     try:
+        final_answer_from_stream = None
+        dictionary_from_stream = None
+        last_error_from_stream = None
+
         async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            if event.get("final_answer"):
+                final_answer_from_stream = event["final_answer"]
+            if event.get("dictionary"):
+                dictionary_from_stream = event["dictionary"]
+            if event.get("last_error"):
+                last_error_from_stream = event["last_error"]
+
             msgs = event.get("messages", [])
             if msgs:
                 last = msgs[-1]
@@ -595,16 +633,22 @@ async def _run_data_dictionary(agent_id: str, session_id: str, message: str) -> 
                     yield _json.dumps({"type": "dd_progress", "content": last.content}) + "\n"
                     await asyncio.sleep(0)
 
-        final_state = graph.get_state(config)
-        vals = final_state.values
-        if vals.get("last_error"):
-            yield _json.dumps({"type": "error", "content": vals["last_error"]}) + "\n"
+        try:
+            final_state = graph.get_state(config)
+            vals = final_state.values if final_state else {}
+        except Exception:
+            vals = {}
+
+        last_error = vals.get("last_error") or last_error_from_stream
+        if last_error:
+            yield _json.dumps({"type": "error", "content": last_error}) + "\n"
             return
-        # Emit the full dictionary JSON for frontend rendering
-        dictionary = vals.get("dictionary")
+
+        dictionary = vals.get("dictionary") or dictionary_from_stream
         if dictionary:
             yield _json.dumps({"type": "dd_result", "dictionary": dictionary}) + "\n"
-        final_answer = vals.get("final_answer", "")
+
+        final_answer = vals.get("final_answer") or final_answer_from_stream or ""
         if final_answer:
             yield _json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
