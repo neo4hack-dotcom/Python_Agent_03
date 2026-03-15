@@ -85,7 +85,8 @@ RULES:
 - Never call the same agent with the exact same task description twice.
 - If a prior task failed, you may retry once with a better description OR proceed to final_answer using available results.
 - For PDF / rapport / report / document / synthesis requests: call report_writer LAST, after all analysis tasks are complete.
-- For data queries: use the EXACT table/column names the user mentioned. If table names are unclear, use human_validation first.
+- PREFER ACTING OVER ASKING: if a specialist agent exists that can discover the needed information (e.g. clickhouse_analyst can call get_schema / list_tables to explore a table), ALWAYS call that agent first instead of asking the user. Use human_validation ONLY when the action is literally impossible without human input (e.g. the user has not mentioned any table name at all and there is no way to infer it).
+- If the user mentions a table name (even informally), treat it as sufficient to call the SQL analyst — the analyst will discover the schema by itself.
 - If the request requires capabilities not available in any listed agent, use cannot_fulfill immediately.
 
 {agents_block}
