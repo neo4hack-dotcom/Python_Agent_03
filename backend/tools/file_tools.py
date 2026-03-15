@@ -482,6 +482,376 @@ def make_file_tools(base_path: Optional[str] = None) -> List[Any]:
         except Exception as e:
             return f"❌ Erreur : {e}"
 
+    # ── list_excel_sheets ─────────────────────────────────────────────────────
+
+    @tool
+    def list_excel_sheets(path: str) -> str:
+        """Liste tous les onglets d'un fichier Excel (.xlsx/.xls) avec leurs dimensions.
+
+        Args:
+            path: Chemin du fichier Excel."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            if p.suffix.lower() not in _EXCEL_EXTS:
+                return f"❌ `{p}` n'est pas un fichier Excel (.xlsx/.xls)."
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+            lines = [f"**Fichier :** `{p}`\n**Onglets ({len(wb.sheetnames)}) :**"]
+            for name in wb.sheetnames:
+                ws = wb[name]
+                lines.append(f"  - `{name}` — {ws.max_row} lignes × {ws.max_column} colonnes")
+            wb.close()
+            return "\n".join(lines)
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── read_excel_sheet ──────────────────────────────────────────────────────
+
+    @tool
+    def read_excel_sheet(path: str, sheet: str = "", start_row: int = 1,
+                         max_rows: int = 50, columns: str = "") -> str:
+        """Lit un onglet spécifique d'un fichier Excel avec options de filtrage.
+
+        Args:
+            path: Chemin du fichier Excel.
+            sheet: Nom de l'onglet (vide = premier onglet).
+            start_row: Numéro de la première ligne à lire (défaut: 1).
+            max_rows: Nombre maximum de lignes à afficher (défaut: 50).
+            columns: Liste de colonnes séparées par virgule, ex: "A,B,D" (vide = toutes)."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+            sheet_name = sheet if sheet and sheet in wb.sheetnames else wb.sheetnames[0]
+            ws = wb[sheet_name]
+            # Parse column filter (A, B, C → 1, 2, 3)
+            col_filter = set()
+            if columns.strip():
+                for c in columns.split(","):
+                    c = c.strip().upper()
+                    if c:
+                        from openpyxl.utils import column_index_from_string
+                        try:
+                            col_filter.add(column_index_from_string(c))
+                        except Exception:
+                            pass
+            rows_data = []
+            for i, row in enumerate(ws.iter_rows(min_row=start_row, values_only=True)):
+                if i >= max_rows:
+                    break
+                if col_filter:
+                    row = tuple(v for j, v in enumerate(row, 1) if j in col_filter)
+                rows_data.append("\t".join(str(c) if c is not None else "" for c in row))
+            wb.close()
+            header = (
+                f"**Fichier :** `{p}`\n"
+                f"**Onglet :** `{sheet_name}` (lignes {start_row}–{start_row + len(rows_data) - 1})\n\n"
+            )
+            total = ws.max_row
+            footer = f"\n… ({total} lignes totales dans cet onglet)" if total > start_row + max_rows - 1 else ""
+            return header + "```\n" + "\n".join(rows_data) + "\n```" + footer
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── create_excel_file ─────────────────────────────────────────────────────
+
+    @tool
+    def create_excel_file(path: str, sheet_name: str = "Feuille1",
+                          csv_data: str = "") -> str:
+        """Crée un nouveau fichier Excel (.xlsx) avec un onglet initial.
+
+        Échoue si le fichier existe déjà (utilisez write_excel_sheet pour modifier).
+
+        Args:
+            path: Chemin du nouveau fichier Excel (doit finir par .xlsx).
+            sheet_name: Nom du premier onglet (défaut: Feuille1).
+            csv_data: Données initiales au format CSV (colonnes séparées par virgule,
+                      lignes séparées par saut de ligne). Peut être vide."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if p.exists():
+                return f"❌ `{p}` existe déjà. Utilisez write_excel_sheet pour modifier."
+            if p.suffix.lower() not in (".xlsx",):
+                return "❌ Le fichier doit avoir l'extension .xlsx"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = sheet_name
+            if csv_data.strip():
+                for line in csv_data.strip().splitlines():
+                    row = [c.strip() for c in line.split(",")]
+                    ws.append(row)
+            wb.save(p)
+            wb.close()
+            return (
+                f"✅ Fichier Excel créé : `{p}`\n"
+                f"Onglet : `{sheet_name}` | {ws.max_row} ligne(s) écrite(s)"
+            )
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── write_excel_sheet ─────────────────────────────────────────────────────
+
+    @tool
+    def write_excel_sheet(path: str, sheet: str, csv_data: str,
+                          confirmed: bool = False) -> str:
+        """Écrit ou remplace un onglet Excel avec des données au format CSV.
+
+        ⚠️ OPÉRATION DESTRUCTIVE — demande confirmation.
+
+        Args:
+            path: Chemin du fichier Excel.
+            sheet: Nom de l'onglet à écrire (créé s'il n'existe pas).
+            csv_data: Données au format CSV (colonnes séparées par virgule,
+                      lignes séparées par saut de ligne).
+            confirmed: False = aperçu + confirmation. True = exécute."""
+        try:
+            import openpyxl
+            p = rp(path)
+            lines = csv_data.strip().splitlines()
+            preview_lines = "\n".join(lines[:5]) + (f"\n… ({len(lines)} lignes)" if len(lines) > 5 else "")
+            if not confirmed:
+                action = "remplacé" if p.exists() else "créé"
+                return (
+                    f"⚠️ **CONFIRMATION REQUISE**\n\n"
+                    f"**Fichier :** `{p}` (sera {action})\n"
+                    f"**Onglet :** `{sheet}`\n"
+                    f"**Données :** {len(lines)} ligne(s)\n"
+                    f"**Aperçu :**\n```\n{preview_lines}\n```\n\n"
+                    f"Confirmez-vous ? (répondez 'oui' / 'confirme')"
+                )
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if p.exists():
+                wb = openpyxl.load_workbook(p)
+            else:
+                wb = openpyxl.Workbook()
+                if "Sheet" in wb.sheetnames:
+                    del wb["Sheet"]
+            if sheet in wb.sheetnames:
+                del wb[sheet]
+            ws = wb.create_sheet(sheet)
+            for line in lines:
+                row = [c.strip() for c in line.split(",")]
+                ws.append(row)
+            wb.save(p)
+            wb.close()
+            return f"✅ Onglet `{sheet}` écrit dans `{p}` ({len(lines)} lignes)"
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── edit_excel_cells ──────────────────────────────────────────────────────
+
+    @tool
+    def edit_excel_cells(path: str, sheet: str, updates: str,
+                         confirmed: bool = False) -> str:
+        """Modifie des cellules spécifiques dans un onglet Excel.
+
+        ⚠️ OPÉRATION DESTRUCTIVE — demande confirmation.
+
+        Args:
+            path: Chemin du fichier Excel.
+            sheet: Nom de l'onglet à modifier.
+            updates: Modifications au format "A1=valeur,B2=autre valeur" (séparées par |).
+                     Exemples :
+                       "A1=Titre|B1=Montant|C1=Date"
+                       "A5=1500|B5=Dupont"
+            confirmed: False = aperçu + confirmation. True = exécute."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            # Parse updates: "A1=val|B2=other"
+            pairs = []
+            for part in updates.split("|"):
+                part = part.strip()
+                if "=" in part:
+                    cell_ref, _, value = part.partition("=")
+                    pairs.append((cell_ref.strip().upper(), value.strip()))
+            if not pairs:
+                return "❌ Format invalide. Utilisez 'A1=valeur|B2=autre'."
+            if not confirmed:
+                preview = "\n".join(f"  `{c}` ← `{v}`" for c, v in pairs)
+                return (
+                    f"⚠️ **CONFIRMATION REQUISE**\n\n"
+                    f"**Fichier :** `{p}`\n"
+                    f"**Onglet :** `{sheet}`\n"
+                    f"**Modifications ({len(pairs)}) :**\n{preview}\n\n"
+                    f"Confirmez-vous ? (répondez 'oui' / 'confirme')"
+                )
+            wb = openpyxl.load_workbook(p)
+            if sheet not in wb.sheetnames:
+                wb.close()
+                return f"❌ Onglet `{sheet}` introuvable. Onglets disponibles : {', '.join(wb.sheetnames)}"
+            ws = wb[sheet]
+            for cell_ref, value in pairs:
+                # Try numeric conversion
+                try:
+                    value = int(value)
+                except ValueError:
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass
+                ws[cell_ref] = value
+            wb.save(p)
+            wb.close()
+            return f"✅ {len(pairs)} cellule(s) modifiée(s) dans `{sheet}` de `{p}`"
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── append_excel_rows ─────────────────────────────────────────────────────
+
+    @tool
+    def append_excel_rows(path: str, sheet: str, csv_rows: str) -> str:
+        """Ajoute des lignes à la fin d'un onglet Excel existant.
+
+        N'efface pas les données existantes — ajoute après la dernière ligne.
+
+        Args:
+            path: Chemin du fichier Excel.
+            sheet: Nom de l'onglet.
+            csv_rows: Lignes à ajouter au format CSV (colonnes séparées par virgule,
+                      lignes par saut de ligne)."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            wb = openpyxl.load_workbook(p)
+            if sheet not in wb.sheetnames:
+                wb.close()
+                return f"❌ Onglet `{sheet}` introuvable. Disponibles : {', '.join(wb.sheetnames)}"
+            ws = wb[sheet]
+            old_rows = ws.max_row
+            lines = [l for l in csv_rows.strip().splitlines() if l.strip()]
+            for line in lines:
+                row = [c.strip() for c in line.split(",")]
+                ws.append(row)
+            wb.save(p)
+            wb.close()
+            return (
+                f"✅ {len(lines)} ligne(s) ajoutée(s) à `{sheet}` dans `{p}`\n"
+                f"Lignes avant : {old_rows} → après : {old_rows + len(lines)}"
+            )
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── add_excel_sheet ───────────────────────────────────────────────────────
+
+    @tool
+    def add_excel_sheet(path: str, sheet_name: str) -> str:
+        """Ajoute un nouvel onglet vide à un fichier Excel existant.
+
+        Args:
+            path: Chemin du fichier Excel.
+            sheet_name: Nom du nouvel onglet."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            wb = openpyxl.load_workbook(p)
+            if sheet_name in wb.sheetnames:
+                wb.close()
+                return f"❌ L'onglet `{sheet_name}` existe déjà."
+            wb.create_sheet(sheet_name)
+            wb.save(p)
+            wb.close()
+            return f"✅ Onglet `{sheet_name}` créé dans `{p}`"
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── delete_excel_sheet ────────────────────────────────────────────────────
+
+    @tool
+    def delete_excel_sheet(path: str, sheet_name: str, confirmed: bool = False) -> str:
+        """Supprime un onglet d'un fichier Excel.
+
+        ⚠️ OPÉRATION IRRÉVERSIBLE — demande confirmation.
+
+        Args:
+            path: Chemin du fichier Excel.
+            sheet_name: Nom de l'onglet à supprimer.
+            confirmed: False = demande confirmation. True = exécute."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            wb = openpyxl.load_workbook(p)
+            if sheet_name not in wb.sheetnames:
+                wb.close()
+                return f"❌ Onglet `{sheet_name}` introuvable. Disponibles : {', '.join(wb.sheetnames)}"
+            ws = wb[sheet_name]
+            n_rows = ws.max_row
+            if not confirmed:
+                wb.close()
+                return (
+                    f"⚠️ **CONFIRMATION REQUISE**\n\n"
+                    f"**Fichier :** `{p}`\n"
+                    f"**Onglet à supprimer :** `{sheet_name}` ({n_rows} lignes)\n\n"
+                    f"🔴 Cette suppression est **irréversible**. Confirmez-vous ? (répondez 'oui' / 'confirme')"
+                )
+            del wb[sheet_name]
+            wb.save(p)
+            wb.close()
+            return f"✅ Onglet `{sheet_name}` supprimé de `{p}`"
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+    # ── rename_excel_sheet ────────────────────────────────────────────────────
+
+    @tool
+    def rename_excel_sheet(path: str, old_name: str, new_name: str) -> str:
+        """Renomme un onglet dans un fichier Excel.
+
+        Args:
+            path: Chemin du fichier Excel.
+            old_name: Nom actuel de l'onglet.
+            new_name: Nouveau nom de l'onglet."""
+        try:
+            import openpyxl
+            p = rp(path)
+            if not p.exists():
+                return f"❌ Fichier introuvable : `{p}`"
+            wb = openpyxl.load_workbook(p)
+            if old_name not in wb.sheetnames:
+                wb.close()
+                return f"❌ Onglet `{old_name}` introuvable. Disponibles : {', '.join(wb.sheetnames)}"
+            if new_name in wb.sheetnames:
+                wb.close()
+                return f"❌ Un onglet `{new_name}` existe déjà."
+            wb[old_name].title = new_name
+            wb.save(p)
+            wb.close()
+            return f"✅ Onglet renommé : `{old_name}` → `{new_name}` dans `{p}`"
+        except PermissionError as e:
+            return str(e)
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
     # ── read_csv_summary ──────────────────────────────────────────────────────
 
     @tool
@@ -531,4 +901,14 @@ def make_file_tools(base_path: Optional[str] = None) -> List[Any]:
         delete_directory,
         move_file,
         read_csv_summary,
+        # Excel tools
+        list_excel_sheets,
+        read_excel_sheet,
+        create_excel_file,
+        write_excel_sheet,
+        edit_excel_cells,
+        append_excel_rows,
+        add_excel_sheet,
+        delete_excel_sheet,
+        rename_excel_sheet,
     ]
