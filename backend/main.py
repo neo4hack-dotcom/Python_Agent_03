@@ -27,7 +27,9 @@ from backend.routers import (
     toolkits_router,
     report_router,
     powerbi_router,
+    scheduler_router,
 )
+from backend.services.scheduler_service import scheduler_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +44,17 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    await scheduler_service.start()
+    logger.info("Scheduler service started")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await scheduler_service.shutdown()
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -76,6 +89,7 @@ app.include_router(config_router)
 app.include_router(toolkits_router)
 app.include_router(report_router)
 app.include_router(powerbi_router)
+app.include_router(scheduler_router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

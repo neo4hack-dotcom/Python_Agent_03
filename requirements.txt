@@ -38,6 +38,9 @@ markdown>=3.7
 # Browser automation (Power BI agent)
 playwright>=1.40
 
+# Scheduler
+apscheduler>=3.10,<4.0
+
 # Utilities
 python-dotenv==1.0.1
 tenacity==9.0.0

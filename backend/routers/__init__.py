@@ -7,3 +7,4 @@ from .config import router as config_router
 from .toolkits import router as toolkits_router
 from .report import router as report_router
 from .powerbi import router as powerbi_router
+from .scheduler import router as scheduler_router

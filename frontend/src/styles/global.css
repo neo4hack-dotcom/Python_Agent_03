@@ -255,6 +255,8 @@ a:hover { text-decoration: underline; }
   animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Inline spin class for lucide icons */
+.spin { animation: spin 0.8s linear infinite; display: inline-block; }
 
 /* Divider */
 .divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }

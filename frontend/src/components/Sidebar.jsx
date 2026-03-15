@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  Bot, ChevronLeft, ChevronRight, Cpu, Plus, Plug, FolderDown, Wrench
+  Bot, ChevronLeft, ChevronRight, Cpu, Plus, Plug, FolderDown, Wrench, CalendarClock
 } from 'lucide-react'
 import { agentsApi } from '../services/api'
 import ConfigModal from './ConfigModal'
@@ -61,6 +61,11 @@ export default function Sidebar({ open, onToggle }) {
           <NavLink to="/toolkits" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <Wrench size={18} className="nav-item-icon" />
             {open && <span className="nav-item-label">Toolkits</span>}
+          </NavLink>
+
+          <NavLink to="/scheduler" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <CalendarClock size={18} className="nav-item-icon" />
+            {open && <span className="nav-item-label">Scheduler</span>}
           </NavLink>
 
           {open && agents.length > 0 && (

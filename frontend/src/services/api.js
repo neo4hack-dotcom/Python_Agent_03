@@ -120,6 +120,20 @@ export const configApi = {
     api.post('/config/import', bundle, { params: { mode } }),
 }
 
+// ── Scheduler ──────────────────────────────────────────────────────────────────
+export const schedulerApi = {
+  listSchedules: () => api.get('/scheduler/schedules'),
+  createSchedule: (payload) => api.post('/scheduler/schedules', payload),
+  getSchedule: (id) => api.get(`/scheduler/schedules/${id}`),
+  updateSchedule: (id, payload) => api.put(`/scheduler/schedules/${id}`, payload),
+  deleteSchedule: (id) => api.delete(`/scheduler/schedules/${id}`),
+  runNow: (id) => api.post(`/scheduler/schedules/${id}/run`),
+  listRuns: (limit = 100) => api.get('/scheduler/runs', { params: { limit } }),
+  listRunsForSchedule: (id, limit = 50) =>
+    api.get(`/scheduler/runs/${id}`, { params: { limit } }),
+  clearRuns: (id) => api.delete(`/scheduler/runs/${id}`),
+}
+
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

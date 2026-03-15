@@ -6,6 +6,7 @@ import AgentsPage from './pages/AgentsPage'
 import ConnectionsPage from './pages/ConnectionsPage'
 import LLMConfigPage from './pages/LLMConfigPage'
 import ToolkitsPage from './pages/ToolkitsPage'
+import SchedulerPage from './pages/SchedulerPage'
 import './styles/layout.css'
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
             <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/llm-config" element={<LLMConfigPage />} />
             <Route path="/toolkits" element={<ToolkitsPage />} />
+            <Route path="/scheduler" element={<SchedulerPage />} />
           </Routes>
         </div>
       </div>
