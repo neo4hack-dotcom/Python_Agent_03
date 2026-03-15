@@ -92,6 +92,7 @@ IMPORTANT RULES:
 - NEVER use generic descriptions like "table_name" or placeholders — use the EXACT table names the user mentioned.
 - If no table name is mentioned, ask the user to clarify (add a human_validation task first).
 - Each analyst task must have a concrete, specific description with real table/column names.
+- When the user explicitly asks for a PDF report, synthesis document, or professional report, add a FINAL task with agent_type = "report_writer". This task should come LAST (after all analysis tasks it depends on) and its description should clearly request a PDF report summarizing all prior results.
 
 {agents_block}
 
@@ -102,8 +103,8 @@ Respond ONLY with a JSON object in this exact format:
     {{
       "id": "task_1",
       "description": "<specific task with exact table/column names>",
-      "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|orchestrator|human_validation>",
-      "agent_id": "<id of the analyst agent to use, or null for orchestrator tasks>",
+      "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|report_writer|orchestrator|human_validation>",
+      "agent_id": "<id of the analyst agent to use, or null for orchestrator/report_writer tasks>",
       "priority": 1,
       "depends_on": [],
       "requires_human_approval": false
@@ -481,6 +482,51 @@ def _run_data_analyst_subtask(agent_id: str, task_description: str) -> Dict[str,
     }
 
 
+def _run_report_subtask(agent_id: str, task_description: str, session_context: str = "") -> Dict[str, Any]:
+    """
+    Exécute le pipeline report_writer pour générer un PDF professionnel.
+
+    Appelle directement les nœuds du graphe report sans passer par le graphe
+    compilé, pour rester cohérent avec le pattern des autres subtask runners.
+
+    Args:
+        agent_id: ID de l'agent report_writer (ou vide — le graph n'en a pas besoin).
+        task_description: Description de la tâche (ex: "Génère un rapport PDF").
+        session_context: Contexte textuel des tâches précédentes.
+
+    Returns:
+        Dict avec "success", "result" (message final), "report_id" (str|None).
+    """
+    from .report_graph import report_writer_node, pdf_node
+
+    logger.info("Running report subtask: %s", task_description[:100])
+
+    state: Dict[str, Any] = {
+        "messages": [],
+        "user_request": task_description,
+        "session_context": session_context,
+        "report_markdown": None,
+        "pdf_path": None,
+        "report_id": None,
+        "final_answer": None,
+        "agent_id": agent_id or "orchestrator",
+        "session_id": "orchestrator_subtask",
+    }
+
+    try:
+        state.update(report_writer_node(state))
+        state.update(pdf_node(state))
+    except Exception as e:
+        logger.error("Report subtask failed: %s", e, exc_info=True)
+        return {"success": False, "result": f"❌ Report generation error: {e}", "report_id": None, "error": str(e)}
+
+    return {
+        "success": True,
+        "result": state.get("final_answer") or "Report generated.",
+        "report_id": state.get("report_id"),
+    }
+
+
 # ── Nœuds du graphe orchestrateur ────────────────────────────────────────────
 
 def planner_node(state: OrchestratorState) -> Dict[str, Any]:
@@ -780,6 +826,45 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                 }
 
         # Ajout du résultat au tableau cumulatif (immutable list pattern de LangGraph)
+        updated_results = state.get("worker_results", []) + [result_entry]
+        last_error = result_entry.get("error") if not result_entry["success"] else None
+        return {
+            "worker_results": updated_results,
+            "messages": [AIMessage(content=f"Task '{task['id']}' {'completed' if result_entry['success'] else 'failed'}.")],
+            "last_error": last_error,
+        }
+
+    # ── Chemin A3 : délégation au pipeline report_writer ─────────────────────
+    if agent_type == "report_writer":
+        agent_id = task.get("agent_id") or _find_analyst_agent("report_writer")
+        # Build session_context from all prior worker results
+        session_context = "\n\n".join(
+            f"**{r['task_description']}**\n{r['result']}"
+            for r in state.get("worker_results", [])
+            if r.get("success")
+        )
+        try:
+            subtask_result = _run_report_subtask(agent_id or "", task["description"], session_context)
+            result_entry = {
+                "task_id": task["id"],
+                "task_description": task["description"],
+                "agent_type": agent_type,
+                "result": subtask_result["result"],
+                "success": subtask_result["success"],
+                "report_id": subtask_result.get("report_id"),
+            }
+            if not subtask_result["success"]:
+                result_entry["error"] = subtask_result.get("error")
+        except Exception as e:
+            logger.error("Report subtask raised exception: %s", e, exc_info=True)
+            result_entry = {
+                "task_id": task["id"],
+                "task_description": task["description"],
+                "agent_type": agent_type,
+                "result": f"❌ Report generation error: {e}",
+                "success": False,
+                "error": str(e),
+            }
         updated_results = state.get("worker_results", []) + [result_entry]
         last_error = result_entry.get("error") if not result_entry["success"] else None
         return {
