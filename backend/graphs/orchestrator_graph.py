@@ -93,7 +93,7 @@ IMPORTANT RULES:
 - NEVER use generic descriptions like "table_name" or placeholders — use the EXACT table names the user mentioned.
 - If no table name is mentioned, ask the user to clarify (add a human_validation task first).
 - Each analyst task must have a concrete, specific description with real table/column names.
-- When the user explicitly asks for a PDF report, synthesis document, or professional report, add a FINAL task with agent_type = "report_writer". This task should come LAST (after all analysis tasks it depends on) and its description should clearly request a PDF report summarizing all prior results.
+- ALWAYS add a FINAL task with agent_type = "report_writer" when the user mentions PDF, rapport, report, document, synthesis, résumé, compte-rendu, or professional output — even if they only hint at it. This task MUST come last, depend on all prior analysis tasks, and clearly describe generating a PDF summarizing all results.
 - For file system operations (read, write, list, search files/directories), use agent_type = "file_manager" with the appropriate file_manager agent_id.
 - For Power BI dashboard navigation, screenshot capture and BI analysis, use agent_type = "powerbi_analyst" with the appropriate powerbi_analyst agent_id.
 
@@ -107,7 +107,7 @@ Respond ONLY with a JSON object in this exact format:
       "id": "task_1",
       "description": "<specific task with exact details>",
       "agent_type": "<clickhouse_analyst|oracle_analyst|data_analyst|file_manager|powerbi_analyst|report_writer|orchestrator|human_validation>",
-      "agent_id": "<id of the specialist agent to use, or null for orchestrator/report_writer tasks>",
+      "agent_id": "<id from agents_block above, or null only for orchestrator/human_validation tasks>",
       "priority": 1,
       "depends_on": [],
       "requires_human_approval": false
@@ -1258,9 +1258,18 @@ def synthesizer_node(state: OrchestratorState) -> Dict[str, Any]:
     ]
 
     response = llm.invoke(messages)
+
+    # Extraire le report_id depuis les worker_results si un rapport PDF a été généré
+    report_id = None
+    for r in state.get("worker_results", []):
+        if r.get("report_id"):
+            report_id = r["report_id"]
+            break
+
     return {
         "final_answer": response.content,
         "messages": [AIMessage(content=response.content)],
+        "report_id": report_id,
     }
 
 
@@ -1351,14 +1360,21 @@ def route_after_worker(state: OrchestratorState) -> Literal["dispatcher", "corre
 
     # ── Gestion des échecs avec retry ──────────────────────────────────────
     if results and not results[-1].get("success", True):
-        last_task_id = results[-1]["task_id"]
+        last_result = results[-1]
+        last_task_id = last_result["task_id"]
+        last_agent_type = last_result.get("agent_type", "")
         retry_count = sum(1 for r in results if r["task_id"] == last_task_id)
         max_retries = 3
-        if retry_count < max_retries:
+        # Le corrector ne peut pas corriger les erreurs de génération PDF, de
+        # navigation Playwright ou de fichiers — ces agents ont leur propre gestion
+        # d'erreur interne. On passe directement à la tâche suivante.
+        non_correctable = {"report_writer", "file_manager", "powerbi_analyst"}
+        if retry_count < max_retries and last_agent_type not in non_correctable:
             return "corrector"
-        # Max retries atteints pour cette tâche → on la considère terminée (échec)
+        # Max retries atteints ou type non corrigeable → on la considère terminée (échec)
         logger.warning(
-            "Task '%s' failed after %d retries — skipping.", last_task_id, retry_count
+            "Task '%s' (type=%s) failed after %d retries — skipping.",
+            last_task_id, last_agent_type, retry_count
         )
 
     # ── Toutes les tâches backlog ont un résultat → synthèse ───────────────

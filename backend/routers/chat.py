@@ -139,6 +139,7 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
         "current_task": None,
         "worker_results": [],
         "final_answer": None,
+        "report_id": None,
         "awaiting_human": False,
         "iteration": 0,
         "max_iterations": agent_cfg.get("max_iterations", 10),
@@ -157,9 +158,26 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
 
         # Final state
         final_state = graph.get_state(config)
-        final_answer = final_state.values.get("final_answer", "")
+        vals = final_state.values
+        final_answer = vals.get("final_answer", "")
         if final_answer:
             yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+
+        # Emit pdf_ready if a report was generated during orchestration
+        report_id = vals.get("report_id")
+        if not report_id:
+            # Fallback: scan worker_results in case synthesizer didn't capture it
+            for r in vals.get("worker_results", []):
+                if r.get("report_id"):
+                    report_id = r["report_id"]
+                    break
+        if report_id:
+            yield json.dumps({
+                "type": "pdf_ready",
+                "report_id": report_id,
+                "download_url": f"/api/report/{report_id}/download",
+                "filename": f"rapport_analyse_{report_id[:8]}.pdf",
+            }) + "\n"
     except Exception as e:
         logger.error("Orchestrator error: %s", e)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"

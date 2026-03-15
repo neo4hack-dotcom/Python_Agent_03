@@ -96,6 +96,12 @@ class OrchestratorState(TypedDict):
     # puis le remet à None après application de la correction.
     last_error: Optional[str]
 
+    # ── ID du rapport PDF généré ─────────────────────────────────────────────
+    # Renseigné par `synthesizer_node` s'il détecte un résultat report_writer
+    # dans les worker_results. Utilisé par le runner SSE pour émettre un
+    # événement `pdf_ready` au frontend afin d'afficher le bouton de téléchargement.
+    report_id: Optional[str]
+
     # ── Identifiants de session ──────────────────────────────────────────────
     # `agent_id` : ID de l'agent orchestrateur dans la base de données locale.
     # `session_id` : ID de la session de conversation (utilisé par le
