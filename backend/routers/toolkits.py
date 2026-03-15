@@ -4,19 +4,23 @@ Router CRUD pour les Toolkits.
 Endpoints :
   GET    /api/toolkits              — liste tous les toolkits (seed defaults si vide)
   POST   /api/toolkits              — créer un toolkit
+  POST   /api/toolkits/generate     — générer un toolkit via LLM (description naturelle)
   GET    /api/toolkits/templates    — retourner les définitions par défaut par db_type
   GET    /api/toolkits/{id}         — obtenir un toolkit spécifique
   PUT    /api/toolkits/{id}         — mettre à jour un toolkit
   DELETE /api/toolkits/{id}         — supprimer un toolkit (sauf defaults)
 """
+import json
+import re
 import uuid
 import logging
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-from backend.database import db, COLL_TOOLKITS
+from backend.database import db, COLL_TOOLKITS, COLL_CONNECTIONS
 from backend.models.toolkit import Toolkit, ToolkitCreate, ToolkitUpdate, ToolDefinition
 
 logger = logging.getLogger(__name__)
@@ -80,6 +84,156 @@ def _seed_defaults():
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
+
+# ── Génération par LLM ────────────────────────────────────────────────────────
+
+class ToolkitGenerateRequest(BaseModel):
+    description: str
+    db_type: str = "clickhouse"
+    connection_id: Optional[str] = None  # si fourni, le schéma réel est injecté
+
+
+def _extract_json(text: str) -> dict:
+    """Extrait le premier bloc JSON valide d'une réponse LLM."""
+    # Cherche un bloc ```json ... ``` ou { ... }
+    for pattern in (r"```json\s*([\s\S]+?)```", r"```\s*([\s\S]+?)```", r"(\{[\s\S]+\})"):
+        m = re.search(pattern, text)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+    raise ValueError("No valid JSON found in LLM response")
+
+
+@router.post("/generate")
+def generate_toolkit(payload: ToolkitGenerateRequest):
+    """
+    Génère une configuration de toolkit via le LLM local.
+
+    Le LLM reçoit :
+    - La description du cas d'usage en langage naturel
+    - Les noms et descriptions par défaut des 4 outils disponibles
+    - (Optionnel) La liste des tables réelles si connection_id est fourni
+
+    Retourne un JSON prêt à être affiché dans le formulaire ToolkitModal.
+    """
+    from backend.graphs.llm_factory import build_llm
+    from backend.tools.langchain_clickhouse_tools import CLICKHOUSE_TOOL_DEFINITIONS
+    from backend.tools.langchain_oracle_tools import ORACLE_TOOL_DEFINITIONS
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    # Outil definitions selon db_type
+    tool_defs = ORACLE_TOOL_DEFINITIONS if payload.db_type == "oracle" else CLICKHOUSE_TOOL_DEFINITIONS
+    tools_block = "\n".join(
+        f"- **{t['name']}** : {t['description']}" for t in tool_defs
+    )
+
+    # Schéma réel optionnel
+    schema_block = ""
+    if payload.connection_id:
+        try:
+            conn_cfg = db.get(COLL_CONNECTIONS, payload.connection_id)
+            if conn_cfg:
+                conn_type = conn_cfg.get("type", "clickhouse")
+                if conn_type == "clickhouse":
+                    from backend.tools.sql_clickhouse import ClickHouseSQLTool
+                    tool = ClickHouseSQLTool(conn_cfg, row_limit=10)
+                    tables = tool.list_tables()
+                    valid_tables = [t for t in tables if not t.startswith("ERROR:")]
+                    if valid_tables:
+                        schema_block = (
+                            f"\n\n## Schéma réel de la base ({conn_cfg.get('database', '')})\n"
+                            f"Tables disponibles : {', '.join(valid_tables[:30])}"
+                        )
+        except Exception as e:
+            logger.warning("Could not fetch schema for generate: %s", e)
+
+    system_prompt = f"""Tu es un expert en configuration d'agents SQL LangGraph.
+Tu dois générer une configuration de toolkit JSON pour personnaliser les outils d'un agent.
+
+## Outils disponibles pour {payload.db_type.upper()} :
+{tools_block}
+{schema_block}
+
+## Instructions :
+1. Génère un nom court et descriptif pour le toolkit
+2. Écris une description courte (1-2 phrases) du toolkit
+3. Pour CHAQUE outil, écris une description PERSONNALISÉE et PRÉCISE adaptée au cas d'usage décrit
+   - Inclus les noms de tables pertinents si connus
+   - Inclus les colonnes clés à utiliser
+   - Inclus les règles métier spécifiques
+   - La description doit guider le LLM vers les bonnes pratiques pour CE cas d'usage
+4. Tu peux désactiver un outil (enabled: false) si il n'est pas utile pour ce cas d'usage
+
+## Format de réponse (JSON uniquement, aucun texte avant ou après) :
+```json
+{{
+  "name": "Nom du toolkit",
+  "description": "Description courte du toolkit",
+  "db_type": "{payload.db_type}",
+  "tools": [
+    {{
+      "name": "list_tables",
+      "description": "Description personnalisée pour ce cas d'usage...",
+      "enabled": true
+    }},
+    {{
+      "name": "get_schema",
+      "description": "Description personnalisée...",
+      "enabled": true
+    }},
+    {{
+      "name": "execute_query",
+      "description": "Description personnalisée avec règles SQL spécifiques...",
+      "enabled": true
+    }},
+    {{
+      "name": "check_query",
+      "description": "Description personnalisée...",
+      "enabled": true
+    }}
+  ]
+}}
+```"""
+
+    try:
+        llm = build_llm(temperature=0.3)
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Cas d'usage : {payload.description}"),
+        ])
+        generated = _extract_json(response.content)
+
+        # Validation / normalisation
+        valid_names = {t["name"] for t in tool_defs}
+        tools_out = []
+        for t in generated.get("tools", []):
+            if t.get("name") in valid_names:
+                tools_out.append({
+                    "name": t["name"],
+                    "description": t.get("description") or None,
+                    "enabled": bool(t.get("enabled", True)),
+                })
+        # S'assurer que tous les outils sont présents
+        present = {t["name"] for t in tools_out}
+        for t in tool_defs:
+            if t["name"] not in present:
+                tools_out.append({"name": t["name"], "description": None, "enabled": True})
+
+        return {
+            "name": generated.get("name", "Toolkit généré"),
+            "description": generated.get("description", ""),
+            "db_type": payload.db_type,
+            "tools": tools_out,
+        }
+
+    except Exception as e:
+        logger.error("Toolkit generation error: %s", e)
+        raise HTTPException(500, f"LLM generation failed: {e}")
+
+
+# ── Endpoints CRUD ─────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[Toolkit])
 def list_toolkits():

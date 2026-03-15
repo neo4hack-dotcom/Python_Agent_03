@@ -104,6 +104,7 @@ export const toolkitsApi = {
   update: (id, payload) => api.put(`/toolkits/${id}`, payload),
   delete: (id) => api.delete(`/toolkits/${id}`),
   getTemplates: () => api.get('/toolkits/templates'),
+  generate: (payload) => api.post('/toolkits/generate', payload),
 }
 
 // ── Config Export / Import ────────────────────────────────────────────────────
