@@ -97,41 +97,56 @@ def make_oracle_tools(
     if all_enabled or TOOL_GET_SCHEMA in enabled_tools:
 
         @tool
-        def get_schema(table_names: str) -> str:
-            """Get column names, data types, nullable flags, and default values
-            for one or more Oracle tables.
+        def get_schema(table_names: str, columns_filter: str = "") -> str:
+            """Get schema information for one or more Oracle tables.
 
             Args:
                 table_names: Comma-separated table names (e.g. "ORDERS,PRODUCTS").
                              Oracle table names are UPPERCASE by convention.
+                columns_filter: OPTIONAL — comma-separated column names to fetch full details for.
+                    Without this: returns compact list of column NAMES only (saves context window).
+                    With this: returns type, length, nullable for those specific columns only.
+                    ALWAYS specify only the columns you will actually use in your SQL query.
+                    Example: "ORDER_ID,ORDER_DATE,TOTAL_AMOUNT,CUSTOMER_ID"
 
-            Returns schema useful for writing optimized SQL:
-            - Column name, data type, length, nullable, default value
-            - Use indexed columns in WHERE clauses to avoid full table scans
-
-            Call this before execute_query to know exact column names and types."""
+            IMPORTANT: Do NOT fetch all columns for wide tables.
+            First call without columns_filter to see available column names,
+            then call again with columns_filter for the columns you need."""
             results = []
+            requested = [c.strip() for c in columns_filter.split(",") if c.strip()] if columns_filter else None
             for tbl in [x.strip() for x in table_names.split(",") if x.strip()]:
-                schema = sql_tool.get_schema(tbl)
+                schema = sql_tool.get_schema(tbl, columns=requested)
                 if "error" in schema:
                     results.append(f"Table `{tbl}`: ERROR — {schema['error']}")
                     continue
-                cols_lines = []
-                for c in schema.get("columns", []):
-                    length = f"({c['length']})" if c.get("length") else ""
-                    nullable = "NULL" if c.get("nullable") == "Y" else "NOT NULL"
-                    default = f"  DEFAULT {c['default']}" if c.get("default") else ""
-                    cols_lines.append(
-                        f"  - {c['name']}: {c['type']}{length} {nullable}{default}"
-                    )
-                cols = "\n".join(cols_lines) if cols_lines else "  (no columns found)"
+                cols = schema.get("columns", [])
                 owner = schema.get("schema", "")
-                results.append(
-                    f"### Table: `{tbl}`" + (f" (schema: {owner})" if owner else "") + "\n"
-                    f"**Columns:**\n{cols}\n"
-                    f"**Tips:** Use indexed columns in WHERE, use TRUNC() for date truncation, "
-                    f"use analytic functions (OVER PARTITION BY) for window calculations."
-                )
+                header = f"### Table: `{tbl}`" + (f" (schema: {owner})" if owner else "")
+                if requested:
+                    cols_lines = []
+                    for c in cols:
+                        length = f"({c['length']})" if c.get("length") else ""
+                        nullable = "NULL" if c.get("nullable") == "Y" else "NOT NULL"
+                        default = f"  DEFAULT {c['default']}" if c.get("default") else ""
+                        cols_lines.append(f"  - {c['name']}: {c['type']}{length} {nullable}{default}")
+                    cols_text = "\n".join(cols_lines) if cols_lines else "  (columns not found)"
+                    results.append(
+                        f"{header}\n**Requested columns:**\n{cols_text}\n"
+                        f"**Tips:** Use indexed columns in WHERE, TRUNC() for dates."
+                    )
+                else:
+                    # Compact: column names only
+                    col_names = [c["name"] for c in cols]
+                    total = len(col_names)
+                    shown = col_names[:40]
+                    names_str = ", ".join(shown)
+                    if total > 40:
+                        names_str += f" … (+{total - 40} more)"
+                    results.append(
+                        f"{header} — {total} columns\n"
+                        f"**Columns:** {names_str}\n"
+                        f"→ To get column types: get_schema('{tbl}', columns_filter='COL1,COL2,...')"
+                    )
             return "\n\n".join(results) if results else "No schema information found."
 
         if TOOL_GET_SCHEMA in overrides:

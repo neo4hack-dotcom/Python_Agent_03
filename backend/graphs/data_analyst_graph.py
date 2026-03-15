@@ -229,31 +229,38 @@ def _auto_schema_context(agent_id: str, task_description: str = "") -> str:
     mentioned = [t for t in all_tables if t.lower() in task_lower]
 
     if not mentioned:
-        return f"Available tables: {', '.join(all_tables[:50])}"
+        return f"Available tables ({len(all_tables)}): {', '.join(all_tables[:60])}"
 
+    # Compact schema: column names only for matched tables (avoids context window overflow)
+    # The ReAct agent will call get_schema(table, columns_filter=...) for type details on demand
     schema_parts = []
-    for table in mentioned[:5]:
+    for table in mentioned[:8]:
         try:
             schema_result = tool.get_schema(table)
             if "error" not in schema_result and schema_result.get("columns"):
                 cols = schema_result["columns"]
-                col_lines = "\n".join(
-                    f"  - {c['name']} ({c['type']})" + (f"  -- {c['comment']}" if c.get("comment") else "")
-                    for c in cols
-                )
+                col_names = [c["name"] for c in cols]
+                total = len(col_names)
+                shown = col_names[:35]
+                names_str = ", ".join(shown)
+                if total > 35:
+                    names_str += f" … (+{total - 35} more)"
                 meta = schema_result.get("metadata", {})
                 meta_info = ""
                 if meta.get("sorting_key"):
-                    meta_info += f"\n  Sorting key: {meta['sorting_key']}"
+                    meta_info += f" | ORDER BY: {meta['sorting_key']}"
                 if meta.get("partition_key"):
-                    meta_info += f"\n  Partition key: {meta['partition_key']}"
-                schema_parts.append(f"Table `{table}`:\n{col_lines}{meta_info}")
+                    meta_info += f" | PARTITION: {meta['partition_key']}"
+                schema_parts.append(
+                    f"Table `{table}` ({total} cols{meta_info}): {names_str}"
+                )
         except Exception as e:
             logger.warning("Could not get schema for %s: %s", table, e)
 
     if schema_parts:
-        return "\n\n".join(schema_parts)
-    return f"Available tables: {', '.join(all_tables[:50])}"
+        header = "Schema (compact — use get_schema with columns_filter for type details):\n"
+        return header + "\n".join(schema_parts)
+    return f"Available tables ({len(all_tables)}): {', '.join(all_tables[:60])}"
 
 
 # ── Nœuds du graphe ───────────────────────────────────────────────────────────

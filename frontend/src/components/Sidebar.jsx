@@ -21,6 +21,7 @@ export default function Sidebar({ open, onToggle }) {
     if (type === 'clickhouse_analyst') return '📊'
     if (type === 'oracle_analyst') return '🔮'
     if (type === 'report_writer') return '📄'
+    if (type === 'file_manager') return '🗂️'
     return '🤖'
   }
 

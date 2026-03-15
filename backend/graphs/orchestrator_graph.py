@@ -268,38 +268,43 @@ def _auto_schema_context(agent_id: str, task_description: str) -> str:
 
     # Aucune table spécifique → fournit la liste complète pour orienter le LLM
     if not mentioned:
-        table_list = ", ".join(all_tables[:50])
-        return f"Available tables: {table_list}"
+        table_list = ", ".join(all_tables[:60])
+        return f"Available tables ({len(all_tables)}): {table_list}"
 
-    # Récupération du schéma détaillé pour chaque table mentionnée
+    # Compact schema: column names only (évite la saturation de la fenêtre contextuelle)
+    # Le LLM appellera get_schema(table, columns_filter=...) pour les types au besoin
     schema_parts = []
-    for table in mentioned[:5]:  # limite à 5 tables pour ne pas saturer le prompt
+    for table in mentioned[:8]:  # limite à 8 tables pour ne pas saturer le prompt
         try:
             # get_schema() retourne {"table":..., "columns":[...], "metadata":{...}}
             # ou {"error": "..."} en cas d'échec
             schema_result = tool.get_schema(table)
             if "error" not in schema_result and schema_result.get("columns"):
                 cols = schema_result["columns"]
-                col_lines = "\n".join(
-                    f"  - {c['name']} ({c['type']})" + (f"  -- {c['comment']}" if c.get("comment") else "")
-                    for c in cols
-                )
+                col_names = [c["name"] for c in cols]
+                total = len(col_names)
+                shown = col_names[:35]
+                names_str = ", ".join(shown)
+                if total > 35:
+                    names_str += f" … (+{total - 35} more)"
                 meta = schema_result.get("metadata", {})
                 meta_info = ""
-                # La sorting_key ClickHouse est cruciale pour les performances SQL
                 if meta.get("sorting_key"):
-                    meta_info += f"\n  Sorting key: {meta['sorting_key']}"
+                    meta_info += f" | ORDER BY: {meta['sorting_key']}"
                 if meta.get("partition_key"):
-                    meta_info += f"\n  Partition key: {meta['partition_key']}"
-                schema_parts.append(f"Table `{table}`:\n{col_lines}{meta_info}")
+                    meta_info += f" | PARTITION: {meta['partition_key']}"
+                schema_parts.append(
+                    f"Table `{table}` ({total} cols{meta_info}): {names_str}"
+                )
         except Exception as e:
             logger.warning("Could not get schema for table %s: %s", table, e)
 
     if schema_parts:
-        return "\n\n".join(schema_parts)
+        header = "Schema (compact — use get_schema with columns_filter for type details):\n"
+        return header + "\n".join(schema_parts)
     # Fallback si le schéma est inaccessible mais les tables sont connues
-    table_list = ", ".join(all_tables[:50])
-    return f"Available tables: {table_list}"
+    table_list = ", ".join(all_tables[:60])
+    return f"Available tables ({len(all_tables)}): {table_list}"
 
 
 def _run_analyst_subtask(agent_id: str, task_description: str) -> Dict[str, Any]:

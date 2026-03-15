@@ -268,6 +268,33 @@ class AnalystState(TypedDict):
     iteration_count: int
 
 
+class FileAgentState(TypedDict):
+    """
+    État du graphe File Manager (file_graph.py).
+
+    Agent ReAct pour la navigation et la gestion de fichiers/répertoires.
+    Supporte : txt, md, csv, xlsx, docx, parquet, json, yaml, py, sql…
+    Les opérations destructives (write, delete, move) requièrent confirmation utilisateur
+    via le mécanisme confirmed=True/False des outils.
+    """
+
+    # ── Fil de messages LangChain ────────────────────────────────────────────
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+    # ── Question / demande de l'utilisateur ──────────────────────────────────
+    user_request: str
+
+    # ── Réponse finale ───────────────────────────────────────────────────────
+    final_answer: Optional[str]
+
+    # ── Compteur d'itérations ReAct (garde anti-boucle) ─────────────────────
+    iteration_count: int
+
+    # ── Identifiants ─────────────────────────────────────────────────────────
+    agent_id: str
+    session_id: str
+
+
 class ReportState(TypedDict):
     """
     État du graphe Rédacteur de Rapports (report_graph.py).

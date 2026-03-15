@@ -11,6 +11,7 @@ class AgentType(str, Enum):
     ORACLE_ANALYST = "oracle_analyst"
     DATA_ANALYST = "data_analyst"
     REPORT_WRITER = "report_writer"
+    FILE_MANAGER = "file_manager"
     CUSTOM = "custom"
 
 

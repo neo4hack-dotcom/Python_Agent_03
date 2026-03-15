@@ -24,6 +24,8 @@ oracledb==2.5.0
 # Data processing
 pandas==2.2.3
 openpyxl==3.1.5
+python-docx>=1.0
+pyarrow>=14.0
 
 # HTTP client
 httpx==0.28.1

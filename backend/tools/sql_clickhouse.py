@@ -137,19 +137,31 @@ class ClickHouseSQLTool:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def get_schema(self, table: str, database: Optional[str] = None) -> Dict[str, Any]:
-        """Return column info for a table including primary/partition keys."""
+    def get_schema(self, table: str, database: Optional[str] = None, columns: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Return column info for a table including primary/partition keys.
+
+        Args:
+            table: Table name.
+            database: Optional database name override.
+            columns: Optional list of column names to return. If None, returns all columns.
+                     Use this to fetch only the columns needed for a specific query.
+        """
         try:
             client = self._get_client()
             db = database or self.cfg.get("database", "default")
 
-            # Column info
+            # Column info — filter by requested columns if specified
+            if columns:
+                col_filter = " AND name IN (" + ",".join(f"'{c}'" for c in columns) + ")"
+            else:
+                col_filter = ""
             cols_result = client.query(
                 f"SELECT name, type, comment FROM system.columns "
-                f"WHERE database = '{db}' AND table = '{table}' "
+                f"WHERE database = '{db}' AND table = '{table}'"
+                f"{col_filter} "
                 f"ORDER BY position"
             )
-            columns = [
+            columns_result = [
                 {"name": row[0], "type": row[1], "comment": row[2]}
                 for row in cols_result.result_rows
             ]
@@ -170,7 +182,7 @@ class ClickHouseSQLTool:
                     "primary_key": row[3],
                 }
 
-            return {"table": table, "database": db, "columns": columns, "metadata": meta}
+            return {"table": table, "database": db, "columns": columns_result, "metadata": meta}
         except Exception as e:
             return {"error": str(e)}
 

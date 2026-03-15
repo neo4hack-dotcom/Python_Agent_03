@@ -139,6 +139,13 @@ REACT_SYSTEM_CLICKHOUSE = """You are a senior ClickHouse data analyst using tool
 - Avoid JOINs; prefer `IN (SELECT ...)` subqueries
 - Handle `Array` columns with `arrayJoin()` or `arraySum()`, `arrayFilter()`
 
+## Schema Fetching Strategy (IMPORTANT for large databases):
+1. Call list_tables to discover available tables
+2. Call get_schema(table_name) WITHOUT columns_filter to see all column NAMES (compact)
+3. Call get_schema(table_name, columns_filter="col1,col2,col3") for type details on ONLY the columns you will use in your SQL
+4. NEVER request all columns at once — only request what you actually need
+5. A table with 200 columns should only inject 5-10 column types into context
+
 ## Final Answer Format:
 When done (no more tool calls needed), write a comprehensive Markdown response:
 - Executive summary answering the question
@@ -174,6 +181,12 @@ REACT_SYSTEM_ORACLE = """You are a senior Oracle database analyst using tools to
 - Analytic: ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)
 - Pagination: FETCH FIRST n ROWS ONLY
 - String: SUBSTR(), NVL(), TO_CHAR(), DECODE()
+
+## Schema Fetching Strategy (IMPORTANT for large databases):
+1. Call list_tables first
+2. Call get_schema(table) WITHOUT columns_filter to see column names compactly
+3. Call get_schema(table, columns_filter="COL1,COL2") for type details on ONLY the columns you need
+4. NEVER request all columns — only request what you actually need for this query
 
 ## Final Answer Format:
 When done, write a comprehensive Markdown response with:

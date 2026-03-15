@@ -11,6 +11,7 @@ const TYPE_LABELS = {
   clickhouse_analyst: { label: 'Analyste ClickHouse', icon: '📊', css: 'agent-icon-analyst' },
   oracle_analyst: { label: 'Analyste Oracle', icon: '🔮', css: 'agent-icon-analyst' },
   report_writer: { label: 'Rédacteur PDF', icon: '📄', css: 'agent-icon-report' },
+  file_manager: { label: 'Gestionnaire Fichiers', icon: '🗂️', css: 'agent-icon-file' },
   custom: { label: 'Personnalisé', icon: '🤖', css: 'agent-icon-custom' },
 }
 

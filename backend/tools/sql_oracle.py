@@ -92,23 +92,36 @@ class OracleSQLTool:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def get_schema(self, table: str, schema: Optional[str] = None) -> Dict[str, Any]:
+    def get_schema(self, table: str, schema: Optional[str] = None, columns: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Return column info for a table.
+
+        Args:
+            table: Table name.
+            schema: Optional schema/owner override.
+            columns: Optional list of column names to return. If None, returns all columns.
+        """
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
             owner = (schema or self.cfg.get("username", "")).upper()
             table_upper = table.upper()
 
+            if columns:
+                col_list = ",".join(f"'{c.upper()}'" for c in columns)
+                col_filter = f" AND column_name IN ({col_list})"
+            else:
+                col_filter = ""
+
             cursor.execute(
-                """
+                f"""
                 SELECT column_name, data_type, data_length, nullable, data_default
                 FROM all_tab_columns
-                WHERE owner = :owner AND table_name = :tbl
+                WHERE owner = :owner AND table_name = :tbl{col_filter}
                 ORDER BY column_id
                 """,
                 {"owner": owner, "tbl": table_upper},
             )
-            columns = [
+            columns_result = [
                 {
                     "name": row[0],
                     "type": row[1],
@@ -119,7 +132,7 @@ class OracleSQLTool:
                 for row in cursor.fetchall()
             ]
             conn.close()
-            return {"table": table, "schema": owner, "columns": columns}
+            return {"table": table, "schema": owner, "columns": columns_result}
         except Exception as e:
             return {"error": str(e)}
 

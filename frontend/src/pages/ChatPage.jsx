@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   Send, Plus, Trash2, Download, Database, ChevronDown,
   MessageSquare, CheckCircle, FileText, Terminal, Copy, Check,
-  Bot, Sparkles, Clock
+  Bot, Sparkles, Clock, AlertTriangle, FolderOpen
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -21,6 +21,7 @@ const AGENT_META = {
   oracle_analyst:    { icon: '🔮', color: '#8b5cf6', label: 'Oracle' },
   data_analyst:      { icon: '🧠', color: '#10b981', label: 'Data Analyst' },
   report_writer:     { icon: '📄', color: '#2563eb', label: 'Rapport PDF' },
+  file_manager:      { icon: '🗂️', color: '#0891b2', label: 'Fichiers' },
   custom:            { icon: '🤖', color: '#64748b', label: 'Custom' },
 }
 
@@ -30,6 +31,7 @@ const WELCOME_HINTS = {
   oracle_analyst: ['Top 20 commandes de la semaine', 'Répartition clients par région', 'Tables Oracle disponibles'],
   data_analyst: ['Profiling statistique des données fournies', 'Analyse des tendances et saisonnalité', 'KPIs et métriques business'],
   report_writer: ['Génère un rapport PDF de notre analyse', 'Synthèse executive de la session', 'Rapport avec recommandations actionnables'],
+  file_manager: ['Liste les fichiers dans /home/user/data', 'Lis le fichier rapport.csv', 'Crée un dossier "exports" dans /tmp'],
 }
 
 // ── Copy button for code blocks ────────────────────────────────────────────────
@@ -372,6 +374,51 @@ function WelcomeScreen({ agent, onHintClick }) {
   )
 }
 
+// ── Human validation banner ────────────────────────────────────────────────────
+function HumanValidationBanner({ message, onConfirm, onDismiss }) {
+  return (
+    <div style={{
+      margin: '0 0 8px',
+      padding: '12px 16px',
+      borderRadius: 10,
+      background: 'rgba(245,158,11,0.08)',
+      border: '1px solid rgba(245,158,11,0.4)',
+      display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <AlertTriangle size={16} style={{ color: '#f59e0b', flexShrink: 0, marginTop: 2 }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>
+            Confirmation requise
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+            {message}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          className="btn btn-sm"
+          style={{
+            background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.5)',
+            color: '#f59e0b', fontWeight: 600, fontSize: 12,
+          }}
+          onClick={onConfirm}
+        >
+          ✅ Confirmer
+        </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          style={{ fontSize: 12 }}
+          onClick={onDismiss}
+        >
+          ❌ Annuler
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Main ChatPage ──────────────────────────────────────────────────────────────
 export default function ChatPage() {
   const { agentId } = useParams()
@@ -389,6 +436,7 @@ export default function ChatPage() {
   const [lastPdfReady, setLastPdfReady] = useState(null)
   const [showLogs, setShowLogs] = useState(false)
   const [agentLogs, setAgentLogs] = useState([])
+  const [humanValidationRequest, setHumanValidationRequest] = useState(null)
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -459,12 +507,13 @@ export default function ChatPage() {
     }
   }
 
-  const handleSend = async () => {
-    if (!input.trim() || !selectedAgent || sending) return
-    const userMessage = input.trim()
-    setInput('')
+  const handleSend = async (messageOverride) => {
+    const userMessage = (typeof messageOverride === 'string' ? messageOverride : input).trim()
+    if (!userMessage || !selectedAgent || sending) return
+    if (!messageOverride) setInput('')
     setSending(true)
     setAgentLogs([])
+    setHumanValidationRequest(null)
 
     const userMsg = {
       id: Date.now().toString(),
@@ -508,6 +557,8 @@ export default function ChatPage() {
           setMessages(prev => prev.map(m =>
             m.id === 'streaming' ? { ...m, metadata: { ...m.metadata, pdf_ready: event } } : m
           ))
+        } else if (event.type === 'human_validation') {
+          setHumanValidationRequest(event.content)
         } else if (event.type === 'error') {
           setMessages(prev => prev.map(m =>
             m.id === 'streaming'
@@ -551,6 +602,10 @@ export default function ChatPage() {
 
   const handleKeyDown = e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
+  }
+
+  const handleConfirmValidation = () => {
+    handleSend('oui')
   }
 
   const handleExportSession = async () => {
@@ -814,6 +869,13 @@ export default function ChatPage() {
             </div>
           ) : (
             <>
+              {humanValidationRequest && (
+                <HumanValidationBanner
+                  message={humanValidationRequest}
+                  onConfirm={handleConfirmValidation}
+                  onDismiss={() => setHumanValidationRequest(null)}
+                />
+              )}
               <div style={{
                 display: 'flex', gap: 10, alignItems: 'flex-end',
                 background: 'var(--bg-card)',
@@ -837,9 +899,11 @@ export default function ChatPage() {
                   placeholder={
                     selectedAgent.type === 'report_writer'
                       ? 'Demandez un rapport PDF de la session… (Entrée pour envoyer)'
-                      : selectedAgent.type.includes('analyst')
-                        ? 'Posez votre question analytique… (Entrée pour envoyer)'
-                        : 'Décrivez votre tâche… (Entrée pour envoyer)'
+                      : selectedAgent.type === 'file_manager'
+                        ? 'Naviguez dans vos fichiers, créez, lisez, modifiez… (Entrée pour envoyer)'
+                        : selectedAgent.type.includes('analyst')
+                          ? 'Posez votre question analytique… (Entrée pour envoyer)'
+                          : 'Décrivez votre tâche… (Entrée pour envoyer)'
                   }
                   disabled={sending}
                 />

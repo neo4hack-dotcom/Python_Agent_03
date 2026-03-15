@@ -8,6 +8,7 @@ const AGENT_TYPES = [
   { value: 'clickhouse_analyst', label: '📊 Analyste ClickHouse', desc: 'Génère et exécute des requêtes SQL ClickHouse' },
   { value: 'oracle_analyst', label: '🔮 Analyste Oracle', desc: 'Génère et exécute des requêtes SQL Oracle' },
   { value: 'report_writer', label: '📄 Rédacteur PDF', desc: 'Génère des rapports PDF professionnels à partir de la session' },
+  { value: 'file_manager', label: '🗂️ Gestionnaire de Fichiers', desc: 'Navigation, lecture et modification de fichiers (txt, csv, xlsx, docx, parquet…)' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
 ]
 
@@ -39,6 +40,10 @@ Tu peux travailler avec ou sans base de données connectée.`,
   report_writer: `Tu es un consultant senior spécialisé en rédaction de rapports d'analyse professionnels.
 Tu transformes les résultats d'analyses en rapports PDF complets, structurés et prêts pour présentation.
 Structure : Résumé Exécutif → Contexte → Méthodologie → Analyse → Résultats Clés → Recommandations → Conclusion.`,
+  file_manager: `Tu es un expert en gestion de fichiers et systèmes de fichiers.
+Tu aides les utilisateurs à naviguer dans des répertoires, lire, créer et modifier des fichiers.
+Tu supportes de nombreux formats : texte, CSV, Excel, Word, Parquet et plus encore.
+Pour toute modification ou suppression, tu demandes TOUJOURS confirmation avant d'agir.`,
   custom: `Tu es un assistant IA expert. Réponds de façon précise et structurée.`,
 }
 
@@ -245,6 +250,25 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
                   <span className="text-sm text-muted">Nombre maximum de lignes retournées par requête</span>
                 </div>
               </div>
+
+              {form.type === 'file_manager' && (
+                <div className="form-group">
+                  <label className="form-label">Répertoire racine <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optionnel)</span></label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Ex: /home/user/data  (laisser vide = accès illimité)"
+                    value={form.extra_config?.base_path || ''}
+                    onChange={(e) => setForm((f) => ({
+                      ...f,
+                      extra_config: { ...f.extra_config, base_path: e.target.value }
+                    }))}
+                  />
+                  <span className="text-sm text-muted">
+                    Si renseigné, l'agent ne pourra accéder qu'aux fichiers à l'intérieur de ce répertoire (sandbox). Recommandé pour la sécurité.
+                  </span>
+                </div>
+              )}
 
               {form.type === 'orchestrator' && (
                 <div className="form-group">

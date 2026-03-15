@@ -107,45 +107,61 @@ def make_clickhouse_tools(
     if all_enabled or TOOL_GET_SCHEMA in enabled_tools:
 
         @tool
-        def get_schema(table_names: str) -> str:
-            """Get column names, data types, comments, and ORDER BY / PARTITION keys
-            for one or more ClickHouse tables.
+        def get_schema(table_names: str, columns_filter: str = "") -> str:
+            """Get schema information for one or more ClickHouse tables.
 
             Args:
                 table_names: Comma-separated table names (e.g. "orders,products").
+                columns_filter: OPTIONAL — comma-separated column names to fetch full details for.
+                    Without this: returns compact list of column NAMES only (saves context window).
+                    With this: returns type, comment for those specific columns only.
+                    ALWAYS specify only the columns you will actually use in your SQL query.
+                    Example: "user_id,event_date,revenue,country_code"
 
-            Returns schema including:
-            - Column name and type (LowCardinality, Array, Tuple, Nullable variants)
-            - ORDER BY (sorting_key): ALWAYS filter on these for best performance
-            - PARTITION BY: useful for date-range queries
-            - Engine type (MergeTree, ReplicatedMergeTree, etc.)
-
-            Call this before execute_query to know exact column names and types."""
+            IMPORTANT: Do NOT fetch all columns for wide tables.
+            First call without columns_filter to see available column names,
+            then call again with columns_filter to get types for the columns you need."""
             results = []
+            requested = [c.strip() for c in columns_filter.split(",") if c.strip()] if columns_filter else None
             for tbl in [x.strip() for x in table_names.split(",") if x.strip()]:
-                schema = sql_tool.get_schema(tbl)
+                schema = sql_tool.get_schema(tbl, columns=requested)
                 if "error" in schema:
                     results.append(f"Table `{tbl}`: ERROR — {schema['error']}")
                     continue
-                cols_lines = []
-                for c in schema.get("columns", []):
-                    line = f"  - {c['name']}: {c['type']}"
-                    if c.get("comment"):
-                        line += f"  # {c['comment']}"
-                    cols_lines.append(line)
-                cols = "\n".join(cols_lines) if cols_lines else "  (no columns found)"
+                cols = schema.get("columns", [])
                 meta = schema.get("metadata", {})
                 order_by = meta.get("sorting_key") or "N/A"
                 partition = meta.get("partition_key") or "N/A"
-                primary = meta.get("primary_key") or "N/A"
                 engine = meta.get("engine") or "N/A"
-                results.append(
-                    f"### Table: `{tbl}` ({engine})\n"
-                    f"**Columns:**\n{cols}\n"
-                    f"**ORDER BY (sorting_key):** `{order_by}`  ← filter on these for fast queries\n"
-                    f"**PARTITION BY:** `{partition}`\n"
-                    f"**PRIMARY KEY:** `{primary}`"
-                )
+                if requested:
+                    cols_lines = []
+                    for c in cols:
+                        line = f"  - {c['name']}: {c['type']}"
+                        if c.get("comment"):
+                            line += f"  # {c['comment']}"
+                        cols_lines.append(line)
+                    cols_text = "\n".join(cols_lines) if cols_lines else "  (columns not found)"
+                    results.append(
+                        f"### Table: `{tbl}` ({engine})\n"
+                        f"**Requested columns:**\n{cols_text}\n"
+                        f"**ORDER BY:** `{order_by}`  ← always filter on these for performance\n"
+                        f"**PARTITION BY:** `{partition}`"
+                    )
+                else:
+                    # Compact: column names only
+                    col_names = [c["name"] for c in cols]
+                    total = len(col_names)
+                    shown = col_names[:40]
+                    names_str = ", ".join(shown)
+                    if total > 40:
+                        names_str += f" … (+{total - 40} more, use columns_filter to access them)"
+                    results.append(
+                        f"### Table: `{tbl}` ({engine}) — {total} columns\n"
+                        f"**Columns:** {names_str}\n"
+                        f"**ORDER BY:** `{order_by}`  ← always filter on these\n"
+                        f"**PARTITION BY:** `{partition}`\n"
+                        f"→ To get column types: get_schema('{tbl}', columns_filter='col1,col2,...')"
+                    )
             return "\n\n".join(results) if results else "No schema information found."
 
         if TOOL_GET_SCHEMA in overrides:
