@@ -326,6 +326,34 @@ class PowerBIAgentState(TypedDict):
     session_id: str
 
 
+class DataQualityState(TypedDict):
+    """
+    État du graphe Data Quality (data_quality_graph.py).
+
+    Pipeline linéaire : schema → stats → [volumetric] → llm_analysis → synthesizer
+    Entrée : message JSON structuré avec table, columns, sample_size, row_filter, time_column.
+    """
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    # Paramètres parsés depuis le message JSON
+    table: str
+    columns: List[Dict[str, Any]]
+    sample_size: int          # 0 = full scan
+    row_filter: Optional[str]
+    time_column: Optional[str]
+    db_type: str              # "clickhouse" ou "oracle"
+    # Résultats intermédiaires
+    schema_info: Optional[Dict[str, Any]]   # {col: {raw_type, col_type, comment}}
+    column_stats: Optional[Dict[str, Any]]  # {col: {stat: value, ...}}
+    volumetric_stats: Optional[Dict[str, Any]]
+    # Sortie
+    llm_analysis: Optional[str]
+    final_answer: Optional[str]
+    # Infra
+    agent_id: str
+    session_id: str
+    last_error: Optional[str]
+
+
 class ReportState(TypedDict):
     """
     État du graphe Rédacteur de Rapports (report_graph.py).

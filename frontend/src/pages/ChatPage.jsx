@@ -13,6 +13,7 @@ import { agentsApi, chatApi, exportApi, downloadBlob, streamChat } from '../serv
 import { useToast } from '../components/Toast'
 import DataTable from '../components/DataTable'
 import AgentLogPanel from '../components/AgentLogPanel'
+import DataQualityForm from '../components/DataQualityForm'
 
 // ── Agent type metadata ────────────────────────────────────────────────────────
 const AGENT_META = {
@@ -23,6 +24,7 @@ const AGENT_META = {
   report_writer:     { icon: '📄', color: '#2563eb', label: 'Rapport PDF' },
   file_manager:      { icon: '🗂️', color: '#0891b2', label: 'Fichiers' },
   powerbi_analyst:   { icon: '📈', color: '#f97316', label: 'Power BI' },
+  data_quality:      { icon: '🔍', color: '#10b981', label: 'Data Quality' },
   custom:            { icon: '🤖', color: '#64748b', label: 'Custom' },
 }
 
@@ -34,6 +36,7 @@ const WELCOME_HINTS = {
   report_writer: ['Génère un rapport PDF de notre analyse', 'Synthèse executive de la session', 'Rapport avec recommandations actionnables'],
   file_manager: ['Liste les fichiers dans /home/user/data', 'Lis le fichier rapport.csv', 'Crée un dossier "exports" dans /tmp'],
   powerbi_analyst: ['Analyse le dashboard Ventes du rapport Power BI', 'Capture et analyse l\'onglet KPIs du rapport', 'Filtre le rapport sur l\'année 2024 et analyse les tendances'],
+  data_quality: [],
 }
 
 // ── Copy button for code blocks ────────────────────────────────────────────────
@@ -660,6 +663,13 @@ export default function ChatPage() {
               ? { ...m, metadata: { ...m.metadata, screenshots: [...(m.metadata.screenshots || []), event] } }
               : m
           ))
+        } else if (event.type === 'dq_progress') {
+          // Show progress step as a subtle status line during DQ analysis
+          setMessages(prev => prev.map(m =>
+            m.id === 'streaming'
+              ? { ...m, content: event.content, streaming: true }
+              : m
+          ))
         } else if (event.type === 'human_validation') {
           setHumanValidationRequest({ content: event.content, options: event.options || [] })
         } else if (event.type === 'error') {
@@ -979,7 +989,16 @@ export default function ChatPage() {
                   onDismiss={() => setHumanValidationRequest(null)}
                 />
               )}
-              <div style={{
+              {selectedAgent?.type === 'data_quality' && (
+                <div style={{ marginBottom: 8 }}>
+                  <DataQualityForm
+                    agent={selectedAgent}
+                    onSubmit={(jsonMsg) => handleSend(jsonMsg)}
+                    disabled={sending}
+                  />
+                </div>
+              )}
+              {selectedAgent?.type !== 'data_quality' && <div style={{
                 display: 'flex', gap: 10, alignItems: 'flex-end',
                 background: 'var(--bg-card)',
                 border: `1px solid ${sending ? 'var(--accent)' : 'var(--border)'}`,
@@ -1028,10 +1047,12 @@ export default function ChatPage() {
                 >
                   {sending ? <div className="spinner" style={{ width: 16, height: 16 }} /> : <Send size={16} />}
                 </button>
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5, paddingLeft: 2 }}>
-                Shift+Entrée pour un saut de ligne · Les agents ont accès à l'historique de cette session
-              </div>
+              </div>}
+              {selectedAgent?.type !== 'data_quality' && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5, paddingLeft: 2 }}>
+                  Shift+Entrée pour un saut de ligne · Les agents ont accès à l'historique de cette session
+                </div>
+              )}
             </>
           )}
         </div>

@@ -642,12 +642,72 @@ def _run_powerbi_subtask(agent_id: str, task_description: str, session_id: str =
         return {"success": False, "result": f"❌ Power BI agent error: {e}", "error": str(e)}
 
 
+def _run_data_quality_subtask(agent_id: str, task_description: str, session_id: str = "") -> Dict[str, Any]:
+    """
+    Exécute le pipeline Data Quality pour une sous-tâche de l'orchestrateur.
+
+    task_description peut être soit un JSON structuré (issu du formulaire),
+    soit une description en langage naturel — dans ce cas on passe la description
+    directement et le graphe fera de son mieux avec les paramètres parsés.
+    """
+    import json as _json
+    from .data_quality_graph import build_data_quality_graph
+
+    logger.info("Running DataQuality subtask for agent %s: %s", agent_id, task_description[:100])
+    dq_session = session_id or f"orch_dq_{uuid.uuid4().hex[:8]}"
+
+    # Try to parse as JSON, else wrap as minimal params
+    try:
+        params = _json.loads(task_description)
+    except Exception:
+        # Natural language task — extract table name heuristically
+        params = {
+            "table": task_description.split()[0] if task_description else "unknown",
+            "columns": [],
+            "sample_size": 50000,
+            "row_filter": None,
+            "time_column": None,
+        }
+
+    graph = build_data_quality_graph()
+    state: Dict[str, Any] = {
+        "messages": [HumanMessage(content=task_description)],
+        "table": params.get("table", ""),
+        "columns": params.get("columns", []),
+        "sample_size": params.get("sample_size", 50000),
+        "row_filter": params.get("row_filter") or None,
+        "time_column": params.get("time_column") or None,
+        "db_type": "clickhouse",
+        "schema_info": None,
+        "column_stats": None,
+        "volumetric_stats": None,
+        "llm_analysis": None,
+        "final_answer": None,
+        "agent_id": agent_id,
+        "session_id": dq_session,
+        "last_error": None,
+    }
+    try:
+        config = {"configurable": {"thread_id": dq_session}}
+        final_state = graph.invoke(state, config=config)
+        err = final_state.get("last_error")
+        if err:
+            return {"success": False, "result": f"❌ Data Quality error: {err}", "error": err}
+        return {
+            "success": True,
+            "result": final_state.get("final_answer") or "Analyse data quality terminée.",
+        }
+    except Exception as e:
+        logger.error("DataQuality subtask failed: %s", e, exc_info=True)
+        return {"success": False, "result": f"❌ Data Quality agent error: {e}", "error": str(e)}
+
+
 # ── Nœuds du graphe orchestrateur ────────────────────────────────────────────
 
 def _build_agents_block() -> str:
     """Charge tous les agents spécialistes actifs et les formate pour les prompts LLM."""
     _specialist_types = (
-        "clickhouse_analyst", "oracle_analyst", "data_analyst",
+        "clickhouse_analyst", "oracle_analyst", "data_analyst", "data_quality",
         "file_manager", "powerbi_analyst", "report_writer",
     )
     all_specialists = [
@@ -856,7 +916,7 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
 
     # Charge tous les agents spécialistes actifs (tous types sauf orchestrator/custom)
     _specialist_types = (
-        "clickhouse_analyst", "oracle_analyst", "data_analyst",
+        "clickhouse_analyst", "oracle_analyst", "data_analyst", "data_quality",
         "file_manager", "powerbi_analyst", "report_writer",
     )
     all_specialists = [
@@ -1277,6 +1337,56 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
                     "agent_id": agent_id,
                     "agent_name": agent_name,
                     "result": f"❌ File manager execution error: {e}",
+                    "success": False,
+                    "error": str(e),
+                }
+        updated_results = state.get("worker_results", []) + [result_entry]
+        last_error = result_entry.get("error") if not result_entry["success"] else None
+        return {
+            "worker_results": updated_results,
+            "messages": [AIMessage(content=f"Task '{task['id']}' {'completed' if result_entry['success'] else 'failed'}.")],
+            "last_error": last_error,
+        }
+
+    # ── Chemin A5b : délégation au pipeline Data Quality ─────────────────────
+    if agent_type == "data_quality":
+        agent_id = task.get("agent_id") or _find_analyst_agent("data_quality")
+        agent_cfg = db.get(COLL_AGENTS, agent_id) if agent_id else None
+        agent_name = agent_cfg.get("name", agent_id) if agent_cfg else "Agent Data Quality"
+        if not agent_id:
+            result_entry = {
+                "task_id": task["id"],
+                "task_description": task["description"],
+                "agent_type": agent_type,
+                "agent_id": None,
+                "agent_name": "—",
+                "result": "❌ No active data_quality agent found. Please create one first.",
+                "success": False,
+                "error": "No active data_quality agent available.",
+            }
+        else:
+            try:
+                subtask_result = _run_data_quality_subtask(agent_id, task["description"], state.get("session_id", ""))
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "result": subtask_result["result"],
+                    "success": subtask_result["success"],
+                }
+                if not subtask_result["success"]:
+                    result_entry["error"] = subtask_result.get("error")
+            except Exception as e:
+                logger.error("DataQuality subtask raised exception: %s", e, exc_info=True)
+                result_entry = {
+                    "task_id": task["id"],
+                    "task_description": task["description"],
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "result": f"❌ Data Quality agent execution error: {e}",
                     "success": False,
                     "error": str(e),
                 }

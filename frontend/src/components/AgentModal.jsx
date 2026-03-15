@@ -10,6 +10,7 @@ const AGENT_TYPES = [
   { value: 'report_writer', label: '📄 Rédacteur PDF', desc: 'Génère des rapports PDF professionnels à partir de la session' },
   { value: 'file_manager', label: '🗂️ Gestionnaire de Fichiers', desc: 'Navigation, lecture et modification de fichiers (txt, csv, xlsx, docx, parquet…)' },
   { value: 'powerbi_analyst', label: '📈 Analyste Power BI', desc: 'Navigation automatisée dans Power BI via Playwright, captures et analyses de dashboards' },
+  { value: 'data_quality', label: '🔍 Data Quality', desc: 'Profiling statistique de colonnes + analyse LLM : nulls, outliers, formats, cardinalité, anomalies temporelles' },
   { value: 'custom', label: '🤖 Personnalisé', desc: 'Agent générique configurable' },
 ]
 
@@ -59,6 +60,16 @@ Méthodologie pour chaque dashboard :
 4. Proposer 3 recommandations concrètes et actionnables
 
 Style : professionnel, analytique, direct. Utilise des listes à puces pour la clarté.`,
+  data_quality: `Tu es un expert Data Quality et Data Engineering.
+Tu analyses les statistiques de profiling de colonnes de bases de données pour identifier des anomalies :
+- **Nulls / vides / sentinelles** : taux de null, valeurs sentinelles (N/A, -1, 9999…)
+- **Formats incohérents** : emails invalides, longueurs anormales, casse incohérente
+- **Valeurs aberrantes métier** : outliers IQR et z-score, valeurs négatives suspectes
+- **Cardinalité suspecte** : quasi-constante (distinct_pct < 1%) ou clé cachée (distinct_pct > 90%)
+- **Distributions anormales** : skewness élevé, coefficient de variation extrême
+- **Anomalies temporelles** : dates futures, epoch (1970), pré-1900
+
+Tu produis des rapports structurés avec score de qualité (0-100) et recommandations priorisées.`,
   custom: `Tu es un assistant IA expert. Réponds de façon précise et structurée.`,
 }
 
@@ -111,11 +122,12 @@ export default function AgentModal({ agent, connections, onClose, onSaved }) {
     }
   }
 
-  const needsConnection = ['clickhouse_analyst', 'oracle_analyst', 'data_analyst'].includes(form.type)
+  const needsConnection = ['clickhouse_analyst', 'oracle_analyst', 'data_analyst', 'data_quality'].includes(form.type)
   const connectionOptional = form.type === 'data_analyst'
   const filteredConnections = connections.filter((c) => {
     if (form.type === 'clickhouse_analyst') return c.type === 'clickhouse'
     if (form.type === 'oracle_analyst') return c.type === 'oracle'
+    if (form.type === 'data_quality') return c.type === 'clickhouse' || c.type === 'oracle'
     return true // data_analyst peut se connecter à n'importe quel type de DB
   })
 

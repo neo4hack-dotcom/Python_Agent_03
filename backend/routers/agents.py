@@ -34,6 +34,12 @@ DEFAULT_PROMPTS = {
         "Transform analysis results into comprehensive, well-structured PDF reports "
         "with executive summary, methodology, findings, and actionable recommendations."
     ),
+    "data_quality": (
+        "Tu es un expert Data Quality et Data Engineering. Tu analyses les statistiques de profiling "
+        "de colonnes de bases de données pour identifier des anomalies : nulls, formats incohérents, "
+        "outliers métier, cardinalité suspecte, distributions anormales et anomalies temporelles. "
+        "Tu produis des rapports structurés avec score de qualité et recommandations priorisées."
+    ),
     "custom": "You are a helpful AI assistant.",
 }
 

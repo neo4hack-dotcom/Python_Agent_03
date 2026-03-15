@@ -13,6 +13,7 @@ class AgentType(str, Enum):
     REPORT_WRITER = "report_writer"
     FILE_MANAGER = "file_manager"
     POWERBI_ANALYST = "powerbi_analyst"
+    DATA_QUALITY = "data_quality"
     CUSTOM = "custom"
 
 

@@ -17,6 +17,7 @@ from backend.database import db, COLL_AGENTS, COLL_SESSIONS, COLL_MESSAGES
 from backend.graphs.orchestrator_graph import build_orchestrator_graph
 from backend.graphs.analyst_graph import build_analyst_graph
 from backend.graphs.data_analyst_graph import build_data_analyst_graph
+from backend.graphs.data_quality_graph import build_data_quality_graph
 from backend.graphs.report_graph import build_report_graph
 from backend.graphs.file_graph import build_file_graph
 from backend.graphs.powerbi_graph import build_powerbi_graph
@@ -30,6 +31,7 @@ router = APIRouter(prefix="/api/chat", tags=["Chat"])
 _orchestrator_graph = None
 _analyst_graph = None
 _data_analyst_graph = None
+_data_quality_graph = None
 _report_graph = None
 _file_graph = None
 _powerbi_graph = None
@@ -40,6 +42,13 @@ def _get_powerbi_agent():
     if _powerbi_graph is None:
         _powerbi_graph = build_powerbi_graph()
     return _powerbi_graph
+
+
+def _get_data_quality():
+    global _data_quality_graph
+    if _data_quality_graph is None:
+        _data_quality_graph = build_data_quality_graph()
+    return _data_quality_graph
 
 
 def _get_file_agent():
@@ -479,11 +488,74 @@ async def _run_powerbi_agent(agent_id: str, session_id: str, message: str) -> As
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
+async def _run_data_quality(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
+    """Runner SSE pour l'agent Data Quality."""
+    import json as _json
+
+    graph = _get_data_quality()
+    config = {"configurable": {"thread_id": session_id}}
+
+    # Parse the structured JSON message from the frontend form
+    try:
+        params = _json.loads(message)
+    except Exception:
+        yield _json.dumps({"type": "error", "content": "Message invalide : JSON attendu du formulaire Data Quality."}) + "\n"
+        return
+
+    initial_state = {
+        "messages": [HumanMessage(content=message)],
+        "table": params.get("table", ""),
+        "columns": params.get("columns", []),
+        "sample_size": params.get("sample_size", 50000),
+        "row_filter": params.get("row_filter") or None,
+        "time_column": params.get("time_column") or None,
+        "db_type": "clickhouse",
+        "schema_info": None,
+        "column_stats": None,
+        "volumetric_stats": None,
+        "llm_analysis": None,
+        "final_answer": None,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "last_error": None,
+    }
+
+    try:
+        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
+            msgs = event.get("messages", [])
+            if msgs:
+                last = msgs[-1]
+                if hasattr(last, "content") and last.content and "[DQ]" in last.content:
+                    yield _json.dumps({"type": "dq_progress", "content": last.content}) + "\n"
+                    await asyncio.sleep(0)
+
+        final_state = graph.get_state(config)
+        vals = final_state.values
+        if vals.get("last_error"):
+            yield _json.dumps({"type": "error", "content": vals["last_error"]}) + "\n"
+            return
+        final_answer = vals.get("final_answer", "")
+        if final_answer:
+            yield _json.dumps({"type": "final", "content": final_answer}) + "\n"
+        # Emit column stats for the frontend table view
+        col_stats = vals.get("column_stats")
+        if col_stats:
+            yield _json.dumps({"type": "dq_stats", "stats": col_stats}) + "\n"
+        vol_stats = vals.get("volumetric_stats")
+        if vol_stats and not vol_stats.get("error"):
+            yield _json.dumps({"type": "dq_volumetric", "stats": vol_stats}) + "\n"
+    except Exception as e:
+        logger.error("Data quality agent error: %s", e)
+        yield _json.dumps({"type": "error", "content": str(e)}) + "\n"
+
+
 def _get_runner(agent_type: str):
     if agent_type == AgentType.ORCHESTRATOR:
         return _run_orchestrator
     if agent_type == AgentType.DATA_ANALYST:
         return _run_data_analyst
+    if agent_type == AgentType.DATA_QUALITY:
+        return _run_data_quality
     if agent_type == AgentType.REPORT_WRITER:
         return _run_report
     if agent_type == AgentType.FILE_MANAGER:
