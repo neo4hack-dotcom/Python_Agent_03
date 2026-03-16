@@ -112,36 +112,76 @@ def build_llm(streaming: bool = False, temperature: Optional[float] = None) -> C
     )
 
 
-def sanitize_messages(messages: list) -> list:
+def _fix_none_content(msg):
     """
-    Sanitize a list of LangChain messages before sending to an LLM.
+    Return a copy of *msg* with content='' instead of None.
 
-    Local LLMs (Ollama, LM Studio) and many OpenAI-compatible APIs reject
-    messages where content is None (422 error). This happens when:
-      - An AIMessage has tool_calls but no text (content=None)
-      - A ToolMessage result is None
-      - Any other message with missing content
+    Tries, in order:
+      1. model_copy(update={"content": ""})  — Pydantic v2, creates a fresh copy
+      2. copy(update={"content": ""})        — Pydantic v1 fallback
+      3. object.__setattr__                  — bypasses all Pydantic constraints
+         (modifies in-place and returns the same object)
 
-    Uses object.__setattr__ to bypass Pydantic's validation/frozen constraints —
-    the most reliable approach regardless of Pydantic v1/v2 and LangChain version.
+    The first approach that succeeds is used; silent fall-through guarantees
+    we always return *something* even if all three fail.
     """
-    for msg in messages:
-        if hasattr(msg, "content") and msg.content is None:
-            try:
-                object.__setattr__(msg, "content", "")
-            except Exception:
-                pass
-    return messages
-
-
-def sanitize_response(response) -> None:
-    """
-    Sanitize an LLM response in-place so it is safe to store in LangGraph state.
-    Call this immediately after llm.invoke() to ensure content is never None
-    before the message is added to state.messages.
-    """
-    if hasattr(response, "content") and response.content is None:
+    # Approach 1: Pydantic v2 model_copy — preferred, creates a new object
+    if hasattr(msg, "model_copy"):
         try:
-            object.__setattr__(response, "content", "")
+            return msg.model_copy(update={"content": ""})
         except Exception:
             pass
+
+    # Approach 2: Pydantic v1 copy
+    if hasattr(msg, "copy"):
+        try:
+            return msg.copy(update={"content": ""})
+        except Exception:
+            pass
+
+    # Approach 3: bypass Pydantic entirely (in-place)
+    try:
+        object.__setattr__(msg, "content", "")
+    except Exception:
+        pass
+    return msg
+
+
+def sanitize_messages(messages: list) -> list:
+    """
+    Return a list of LangChain messages safe to send to any LLM API.
+
+    Local LLMs (Ollama, LM Studio) and many OpenAI-compatible APIs reject
+    messages where content is None (HTTP 422). This happens when a local
+    model returns an AIMessage with tool_calls but content=null.
+
+    For each message whose content is None, a sanitized copy (content='')
+    is returned.  Messages with non-None content are returned as-is.
+    """
+    result = []
+    for msg in messages:
+        if hasattr(msg, "content") and msg.content is None:
+            result.append(_fix_none_content(msg))
+        else:
+            result.append(msg)
+    return result
+
+
+def sanitize_response(response):
+    """
+    Return the LLM response with content='' if content is None.
+
+    Call this immediately after llm.invoke() and use the RETURN VALUE
+    (not the original object) when storing into LangGraph state:
+
+        response = llm.invoke(messages)
+        response = sanitize_response(response)   # ← use return value
+        return {"messages": [response], ...}
+
+    This guarantees that the AIMessage stored in state never has content=None,
+    preventing 422 errors on the next iteration when the message is retrieved
+    from the MemorySaver checkpoint and sent back to the LLM.
+    """
+    if hasattr(response, "content") and response.content is None:
+        return _fix_none_content(response)
+    return response

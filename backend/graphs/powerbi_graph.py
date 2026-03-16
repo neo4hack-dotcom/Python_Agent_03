@@ -129,8 +129,7 @@ def agent_node(state: PowerBIAgentState) -> Dict[str, Any]:
             "iteration_count": iteration + 1,
         }
 
-    response = llm_with_tools.invoke(messages)
-    sanitize_response(response)
+    response = sanitize_response(llm_with_tools.invoke(messages))
     updates: Dict[str, Any] = {
         "messages": [response],
         "iteration_count": iteration + 1,

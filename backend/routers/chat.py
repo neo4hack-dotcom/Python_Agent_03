@@ -253,12 +253,14 @@ async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGen
 
     try:
         async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    yield json.dumps({"type": "token", "content": last.content}) + "\n"
-                    await asyncio.sleep(0)
+            # Only emit token for final_answer updates — not for intermediate
+            # ToolMessages (SQL results, schema) or AIMessages with tool_calls.
+            # Emitting ToolMessage content as "token" confused the frontend
+            # (user saw the raw JSON table briefly before the real answer).
+            fa = event.get("final_answer")
+            if fa:
+                yield json.dumps({"type": "thinking", "content": "⚙️ Analyse en cours…"}) + "\n"
+                await asyncio.sleep(0)
 
             # Emit SQL when generated
             sql = event.get("generated_sql")

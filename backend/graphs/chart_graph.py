@@ -136,8 +136,7 @@ def build_chart_graph():
 
         system_content = custom_prompt if custom_prompt else CHART_SYSTEM
         messages = sanitize_messages([SystemMessage(content=system_content)] + list(state.get("messages", [])))
-        response = llm_with_tools.invoke(messages)
-        sanitize_response(response)
+        response = sanitize_response(llm_with_tools.invoke(messages))
 
         is_final = not (hasattr(response, "tool_calls") and response.tool_calls)
         updates = {

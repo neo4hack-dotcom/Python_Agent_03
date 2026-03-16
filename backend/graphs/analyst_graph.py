@@ -411,9 +411,11 @@ def agent_react_node(state: AnalystState) -> Dict[str, Any]:
 
     # Appel LLM
     response = llm.invoke(full_messages)
-    # Sanitize response immediately — content=None from a tool-calling LLM response
-    # would re-enter state and cause 422 on the next iteration even after sanitize_messages
-    sanitize_response(response)
+    # Sanitize response — content=None from a tool-calling LLM response would
+    # re-enter state and cause 422 on the next iteration. Use the return value:
+    # sanitize_response may create a new object via model_copy instead of
+    # modifying in-place, so the assignment is mandatory.
+    response = sanitize_response(response)
 
     iteration = state.get("iteration_count", 0) + 1
     updates: Dict[str, Any] = {
