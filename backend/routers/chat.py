@@ -11,7 +11,7 @@ from typing import AsyncGenerator, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 from backend.database import db, COLL_AGENTS, COLL_SESSIONS, COLL_MESSAGES
 from backend.graphs.orchestrator_graph import build_orchestrator_graph
@@ -112,6 +112,26 @@ def _get_report():
     if _report_graph is None:
         _report_graph = build_report_graph()
     return _report_graph
+
+
+def _merge_state(state: dict, result: dict) -> dict:
+    """
+    Simulate LangGraph's add_messages reducer for direct node calls.
+
+    Merges the result dict returned by a node into the running state:
+      - 'messages' lists are CONCATENATED (not replaced)
+      - All other keys are REPLACED (last-write wins)
+
+    Use this instead of graph.astream() to avoid MemorySaver entirely.
+    """
+    merged = dict(state)
+    for key, value in result.items():
+        if key == "messages":
+            existing = merged.get("messages") or []
+            merged["messages"] = list(existing) + list(value or [])
+        else:
+            merged[key] = value
+    return merged
 
 
 def _load_conversation_history(session_id: str, max_messages: int = 20) -> list:
@@ -368,109 +388,99 @@ async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGen
 
 
 async def _run_data_analyst(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent analyste de données."""
-    graph = _get_data_analyst()
-    config = {"configurable": {"thread_id": session_id}}
-    agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
-
-    # Pré-chargement du schéma de la DB si l'agent a une connexion configurée
-    from backend.graphs.data_analyst_graph import _auto_schema_context
-    schema_context = _auto_schema_context(agent_id, message)
-
-    history = _load_conversation_history(session_id)
-    initial_state = {
-        "messages": history,
-        "user_question": message,
-        "analysis_plan": None,
-        "sql_queries": None,
-        "data_results": None,
-        "analysis_output": None,
-        "final_answer": None,
-        "schema_context": schema_context,
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "last_error": None,
-    }
+    """
+    Data Analyst — direct node calls, no LangGraph/MemorySaver.
+    Pipeline: planner → [sql_executor] → analyst → synthesizer
+    """
+    from backend.graphs.data_analyst_graph import (
+        _auto_schema_context, _has_connection,
+        planner_node, sql_executor_node, analyst_node, synthesizer_node,
+    )
 
     try:
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    yield json.dumps({"type": "token", "content": last.content}) + "\n"
+        schema_context = _auto_schema_context(agent_id, message)
+        state: dict = {
+            "messages": list(_load_conversation_history(session_id)),
+            "user_question": message,
+            "analysis_plan": None,
+            "sql_queries": None,
+            "data_results": None,
+            "analysis_output": None,
+            "final_answer": None,
+            "schema_context": schema_context,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "last_error": None,
+        }
+
+        state = _merge_state(state, planner_node(state))
+        await asyncio.sleep(0)
+
+        if state.get("sql_queries") and _has_connection(agent_id):
+            state = _merge_state(state, sql_executor_node(state))
+            for r in (state.get("data_results") or []):
+                if r.get("success") and r.get("rows"):
+                    yield json.dumps({
+                        "type": "query_result",
+                        "row_count": r.get("row_count", 0),
+                        "columns": r.get("columns", []),
+                        "rows": r.get("rows", []),
+                        "sql": r.get("sql", ""),
+                        "description": r.get("description", ""),
+                        "warning": r.get("warning"),
+                    }) + "\n"
                     await asyncio.sleep(0)
 
-            # Emit data results metadata when SQL is executed
-            data_results = event.get("data_results")
-            if data_results:
-                for r in data_results:
-                    if r.get("success") and r.get("rows"):
-                        yield json.dumps({
-                            "type": "query_result",
-                            "row_count": r.get("row_count", 0),
-                            "columns": r.get("columns", []),
-                            "rows": r.get("rows", []),
-                            "sql": r.get("sql", ""),
-                            "description": r.get("description", ""),
-                            "warning": r.get("warning"),
-                        }) + "\n"
-                        await asyncio.sleep(0)
+        state = _merge_state(state, analyst_node(state))
+        await asyncio.sleep(0)
+        state = _merge_state(state, synthesizer_node(state))
 
-        final_state = graph.get_state(config)
-        final_answer = final_state.values.get("final_answer", "")
+        final_answer = state.get("final_answer") or ""
         if final_answer:
             yield json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
-        logger.error("Data analyst error: %s", e)
+        logger.error("Data analyst error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_report(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent rédacteur de rapports PDF."""
-    graph = _get_report()
-    config = {"configurable": {"thread_id": f"report_{session_id}"}}
-
-    # Charger l'historique de la session pour contexte
-    history = db.get_list(COLL_MESSAGES, session_id)
-    context_lines = []
-    for msg in history[-30:]:  # max 30 derniers messages
-        role = "Utilisateur" if msg.get("role") == "user" else "Assistant"
-        content = msg.get("content", "")
-        if content:
-            context_lines.append(f"**{role}** : {content}")
-    session_context = "\n\n".join(context_lines)
-
-    initial_state = {
-        "messages": [],
-        "user_request": message,
-        "session_context": session_context,
-        "report_markdown": None,
-        "pdf_path": None,
-        "report_id": None,
-        "final_answer": None,
-        "agent_id": agent_id,
-        "session_id": session_id,
-    }
+    """
+    Report Writer — direct node calls, no LangGraph/MemorySaver.
+    Pipeline: report_writer_node → pdf_node
+    """
+    from backend.graphs.report_graph import report_writer_node, pdf_node
 
     try:
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    yield json.dumps({"type": "token", "content": last.content}) + "\n"
-                    await asyncio.sleep(0)
+        history = db.get_list(COLL_MESSAGES, session_id)
+        context_lines = []
+        for msg in history[-30:]:
+            role = "Utilisateur" if msg.get("role") == "user" else "Assistant"
+            content = msg.get("content", "")
+            if content:
+                context_lines.append(f"**{role}** : {content}")
+        session_context = "\n\n".join(context_lines)
 
-        final_state = graph.get_state(config)
-        vals = final_state.values
-        final_answer = vals.get("final_answer", "")
-        report_id = vals.get("report_id")
+        state: dict = {
+            "messages": [],
+            "user_request": message,
+            "session_context": session_context,
+            "report_markdown": None,
+            "pdf_path": None,
+            "report_id": None,
+            "final_answer": None,
+            "agent_id": agent_id,
+            "session_id": session_id,
+        }
+
+        state = _merge_state(state, report_writer_node(state))
+        await asyncio.sleep(0)
+        state = _merge_state(state, pdf_node(state))
+
+        final_answer = state.get("final_answer") or ""
+        report_id = state.get("report_id")
 
         if final_answer:
             yield json.dumps({"type": "final", "content": final_answer}) + "\n"
-
-        # Émettre l'événement pdf_ready pour que le frontend affiche le bouton de téléchargement
         if report_id:
             yield json.dumps({
                 "type": "pdf_ready",
@@ -479,422 +489,465 @@ async def _run_report(agent_id: str, session_id: str, message: str) -> AsyncGene
                 "filename": f"rapport_analyse_{report_id[:8]}.pdf",
             }) + "\n"
     except Exception as e:
-        logger.error("Report writer error: %s", e)
+        logger.error("Report writer error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_file_agent(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent File Manager."""
-    graph = _get_file_agent()
-    config = {"configurable": {"thread_id": session_id}}
-
-    history = _load_conversation_history(session_id)
-    initial_state = {
-        "messages": history + [HumanMessage(content=message)],
-        "user_request": message,
-        "final_answer": None,
-        "iteration_count": 0,
-        "agent_id": agent_id,
-        "session_id": session_id,
-    }
+    """
+    File Manager — plain Python ReAct loop, no LangGraph/MemorySaver.
+    """
+    from backend.graphs.file_graph import _build_tools, FILE_MANAGER_SYSTEM
 
     try:
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    content = last.content
-                    # Detect confirmation requests — emit special event for frontend
-                    if "CONFIRMATION REQUISE" in content or "confirmed=False" in content:
-                        yield json.dumps({"type": "human_validation", "content": content}) + "\n"
-                    else:
-                        yield json.dumps({"type": "token", "content": content}) + "\n"
-                    await asyncio.sleep(0)
-                # Emit tool calls as log events
-                if hasattr(last, "tool_calls") and last.tool_calls:
-                    for tc in last.tool_calls:
-                        yield json.dumps({
-                            "type": "tool_call",
-                            "tool": tc["name"],
-                            "args": str(tc.get("args", {}))[:200],
-                        }) + "\n"
-                        await asyncio.sleep(0)
+        agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
+        custom_prompt = agent_cfg.get("system_prompt", "")
+        tools = _build_tools(agent_id)
+        llm = build_llm()
+        if tools:
+            llm = llm.bind_tools(tools)
+        tool_map = {t.name: t for t in tools}
 
-        final_state = graph.get_state(config)
-        final_answer = final_state.values.get("final_answer", "")
-        if final_answer:
+        system_prompt = FILE_MANAGER_SYSTEM.format(custom_prompt=custom_prompt or "")
+        messages: list = (
+            [SystemMessage(content=system_prompt)]
+            + _load_conversation_history(session_id)
+            + [HumanMessage(content=message)]
+        )
+        final_answer = ""
+
+        for iteration in range(15):
+            response = llm.invoke(messages)
+            raw_content = response.content or ""
+            raw_tool_calls = list(getattr(response, "tool_calls", None) or [])
+            messages.append(AIMessage(content=raw_content, tool_calls=raw_tool_calls))
+
+            if not raw_tool_calls:
+                final_answer = raw_content
+                break
+
+            for tc in raw_tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args") or {}
+                tool_call_id = tc.get("id") or f"call_{iteration}_{tool_name}"
+
+                yield json.dumps({"type": "tool_call", "tool": tool_name,
+                                  "args": str(tool_args)[:200]}) + "\n"
+
+                fn = tool_map.get(tool_name)
+                tool_content = str(fn.invoke(tool_args) if fn else f"Unknown tool: {tool_name}")
+                messages.append(ToolMessage(content=tool_content, tool_call_id=tool_call_id, name=tool_name))
+
+        if not final_answer:
+            final_answer = "❌ Opération impossible en moins de 15 itérations."
+
+        if "CONFIRMATION REQUISE" in final_answer or "confirmed=False" in final_answer:
+            yield json.dumps({"type": "human_validation", "content": final_answer}) + "\n"
+        else:
             yield json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
-        logger.error("File agent error: %s", e)
+        logger.error("File agent error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_powerbi_agent(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent Power BI Analyst (Playwright)."""
-    graph = _get_powerbi_agent()
-    config = {"configurable": {"thread_id": session_id}}
-
-    history = _load_conversation_history(session_id)
-    initial_state = {
-        "messages": history + [HumanMessage(content=message)],
-        "user_request": message,
-        "final_answer": None,
-        "iteration_count": 0,
-        "agent_id": agent_id,
-        "session_id": session_id,
-    }
+    """
+    Power BI Analyst — plain Python ReAct loop, no LangGraph/MemorySaver.
+    """
+    from backend.graphs.powerbi_graph import _build_tools, POWERBI_SYSTEM
 
     try:
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    content = last.content
-                    # Detect screenshot captures — emit screenshot_ready event for frontend display
-                    if "SCREENSHOT_CAPTURED:" in content:
-                        lines = content.split("\n")
-                        filename_line = next(
-                            (l for l in lines if l.startswith("SCREENSHOT_CAPTURED:")), ""
-                        )
-                        filename = filename_line.replace("SCREENSHOT_CAPTURED:", "").strip()
-                        if filename:
-                            yield json.dumps({
-                                "type": "screenshot_ready",
-                                "filename": filename,
-                                "screenshot_url": f"/api/powerbi/screenshot/{filename}",
-                            }) + "\n"
-                        # Also emit the rest of the tool output as a token (minus the base64)
-                        clean = "\n".join(
-                            l for l in lines
-                            if not l.startswith("SCREENSHOT_CAPTURED:")
-                            and not l.startswith("BASE64_IMAGE:")
-                        ).strip()
-                        if clean:
-                            yield json.dumps({"type": "token", "content": clean}) + "\n"
-                    else:
-                        yield json.dumps({"type": "token", "content": content}) + "\n"
-                    await asyncio.sleep(0)
-                # Emit tool calls as log events
-                if hasattr(last, "tool_calls") and last.tool_calls:
-                    for tc in last.tool_calls:
-                        yield json.dumps({
-                            "type": "tool_call",
-                            "tool": tc["name"],
-                            "args": str(tc.get("args", {}))[:200],
-                        }) + "\n"
-                        await asyncio.sleep(0)
+        agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
+        custom_prompt = agent_cfg.get("system_prompt", "")
+        tools = _build_tools(agent_id, session_id)
+        llm = build_llm()
+        if tools:
+            llm = llm.bind_tools(tools)
+        tool_map = {t.name: t for t in tools}
 
-        final_state = graph.get_state(config)
-        final_answer = final_state.values.get("final_answer", "")
-        if final_answer:
-            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+        system_prompt = POWERBI_SYSTEM.format(custom_prompt=custom_prompt or "")
+        messages: list = (
+            [SystemMessage(content=system_prompt)]
+            + _load_conversation_history(session_id)
+            + [HumanMessage(content=message)]
+        )
+        final_answer = ""
+
+        for iteration in range(20):
+            response = llm.invoke(messages)
+            raw_content = response.content or ""
+            raw_tool_calls = list(getattr(response, "tool_calls", None) or [])
+            messages.append(AIMessage(content=raw_content, tool_calls=raw_tool_calls))
+
+            if not raw_tool_calls:
+                final_answer = raw_content
+                break
+
+            for tc in raw_tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args") or {}
+                tool_call_id = tc.get("id") or f"call_{iteration}_{tool_name}"
+
+                yield json.dumps({"type": "tool_call", "tool": tool_name,
+                                  "args": str(tool_args)[:200]}) + "\n"
+
+                fn = tool_map.get(tool_name)
+                tool_content = str(fn.invoke(tool_args) if fn else f"Unknown tool: {tool_name}")
+                messages.append(ToolMessage(content=tool_content, tool_call_id=tool_call_id, name=tool_name))
+
+                if "SCREENSHOT_CAPTURED:" in tool_content:
+                    lines = tool_content.split("\n")
+                    fn_line = next((l for l in lines if l.startswith("SCREENSHOT_CAPTURED:")), "")
+                    filename = fn_line.replace("SCREENSHOT_CAPTURED:", "").strip()
+                    if filename:
+                        yield json.dumps({
+                            "type": "screenshot_ready",
+                            "filename": filename,
+                            "screenshot_url": f"/api/powerbi/screenshot/{filename}",
+                        }) + "\n"
+                await asyncio.sleep(0)
+
+        if not final_answer:
+            final_answer = "❌ Analyse impossible en moins de 20 itérations."
+        yield json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
-        logger.error("PowerBI agent error: %s", e)
+        logger.error("PowerBI agent error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_data_quality(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent Data Quality."""
-    import json as _json
+    """
+    Data Quality — direct node calls, no LangGraph/MemorySaver.
+    Pipeline: schema_node → stats_node → [volumetric_node] → llm_analysis_node → synthesizer_node
+    """
+    from backend.graphs.data_quality_graph import (
+        schema_node, stats_node, volumetric_node, llm_analysis_node, synthesizer_node,
+    )
 
-    graph = _get_data_quality()
-    # Use a unique thread_id to avoid MemorySaver state collision on re-runs
-    thread_id = f"dq_{session_id}_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
-
-    # Parse the structured JSON message from the frontend form
     try:
-        params = _json.loads(message)
+        params = json.loads(message)
     except Exception:
-        yield _json.dumps({"type": "error", "content": "Message invalide : JSON attendu du formulaire Data Quality."}) + "\n"
+        yield json.dumps({"type": "error", "content": "Message invalide : JSON attendu du formulaire Data Quality."}) + "\n"
         return
 
-    initial_state = {
-        "messages": [HumanMessage(content=message)],
-        "table": params.get("table", ""),
-        "columns": params.get("columns", []),
-        "sample_size": params.get("sample_size", 50000),
-        "row_filter": params.get("row_filter") or None,
-        "time_column": params.get("time_column") or None,
-        "db_type": "clickhouse",
-        "schema_info": None,
-        "column_stats": None,
-        "volumetric_stats": None,
-        "llm_analysis": None,
-        "final_answer": None,
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "last_error": None,
-    }
-
     try:
-        final_answer_from_stream = None
-        col_stats_from_stream = None
-        vol_stats_from_stream = None
-        last_error_from_stream = None
+        state: dict = {
+            "messages": [HumanMessage(content=message)],
+            "table": params.get("table", ""),
+            "columns": params.get("columns", []),
+            "sample_size": params.get("sample_size", 50000),
+            "row_filter": params.get("row_filter") or None,
+            "time_column": params.get("time_column") or None,
+            "db_type": "clickhouse",
+            "schema_info": None,
+            "column_stats": None,
+            "volumetric_stats": None,
+            "llm_analysis": None,
+            "final_answer": None,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "last_error": None,
+        }
 
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            # Track state values as they arrive
-            if event.get("final_answer"):
-                final_answer_from_stream = event["final_answer"]
-            if event.get("column_stats"):
-                col_stats_from_stream = event["column_stats"]
-            if event.get("volumetric_stats") and not event["volumetric_stats"].get("error"):
-                vol_stats_from_stream = event["volumetric_stats"]
-            if event.get("last_error"):
-                last_error_from_stream = event["last_error"]
+        # schema_node
+        state = _merge_state(state, schema_node(state))
+        await asyncio.sleep(0)
+        if state.get("last_error"):
+            yield json.dumps({"type": "error", "content": state["last_error"]}) + "\n"
+            return
+        for msg in (state.get("messages") or []):
+            if hasattr(msg, "content") and msg.content and "[DQ]" in msg.content:
+                yield json.dumps({"type": "dq_progress", "content": msg.content}) + "\n"
+        await asyncio.sleep(0)
 
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content and "[DQ]" in last.content:
-                    yield _json.dumps({"type": "dq_progress", "content": last.content}) + "\n"
-                    await asyncio.sleep(0)
+        # stats_node
+        state = _merge_state(state, stats_node(state))
+        await asyncio.sleep(0)
+        if state.get("last_error"):
+            yield json.dumps({"type": "error", "content": state["last_error"]}) + "\n"
+            return
+        for msg in (state.get("messages") or []):
+            if hasattr(msg, "content") and msg.content and "[DQ]" in msg.content:
+                yield json.dumps({"type": "dq_progress", "content": msg.content}) + "\n"
+        await asyncio.sleep(0)
 
-        # Use stream values as primary source (more reliable than get_state with MemorySaver)
-        try:
-            final_state = graph.get_state(config)
-            vals = final_state.values if final_state else {}
-        except Exception:
-            vals = {}
+        # volumetric_node (only if time_column is set)
+        if state.get("time_column"):
+            state = _merge_state(state, volumetric_node(state))
+            await asyncio.sleep(0)
+            for msg in (state.get("messages") or []):
+                if hasattr(msg, "content") and msg.content and "[DQ]" in msg.content:
+                    yield json.dumps({"type": "dq_progress", "content": msg.content}) + "\n"
+            await asyncio.sleep(0)
 
-        last_error = vals.get("last_error") or last_error_from_stream
-        if last_error:
-            yield _json.dumps({"type": "error", "content": last_error}) + "\n"
+        # llm_analysis_node
+        state = _merge_state(state, llm_analysis_node(state))
+        await asyncio.sleep(0)
+
+        # synthesizer_node
+        state = _merge_state(state, synthesizer_node(state))
+
+        if state.get("last_error"):
+            yield json.dumps({"type": "error", "content": state["last_error"]}) + "\n"
             return
 
-        final_answer = vals.get("final_answer") or final_answer_from_stream or ""
+        final_answer = state.get("final_answer") or ""
         if final_answer:
-            yield _json.dumps({"type": "final", "content": final_answer}) + "\n"
+            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
 
-        col_stats = vals.get("column_stats") or col_stats_from_stream
+        col_stats = state.get("column_stats")
         if col_stats:
-            yield _json.dumps({"type": "dq_stats", "stats": col_stats}) + "\n"
+            yield json.dumps({"type": "dq_stats", "stats": col_stats}) + "\n"
 
-        vol_stats = vals.get("volumetric_stats") or vol_stats_from_stream
+        vol_stats = state.get("volumetric_stats")
         if vol_stats and not vol_stats.get("error"):
-            yield _json.dumps({"type": "dq_volumetric", "stats": vol_stats}) + "\n"
+            yield json.dumps({"type": "dq_volumetric", "stats": vol_stats}) + "\n"
+
     except Exception as e:
-        logger.error("Data quality agent error: %s", e)
-        yield _json.dumps({"type": "error", "content": str(e)}) + "\n"
+        logger.error("Data quality agent error: %s", e, exc_info=True)
+        yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_data_dictionary(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent Data Dictionary."""
-    import json as _json
-
-    graph = _get_data_dictionary()
-    # Use a unique thread_id to avoid MemorySaver state collision on re-runs
-    thread_id = f"dd_{session_id}_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
+    """
+    Data Dictionary — direct node calls, no LangGraph/MemorySaver.
+    Pipeline: discover_tables_node → fetch_schemas_node → llm_doc_node → synthesizer_node
+    """
+    from backend.graphs.data_dictionary_graph import (
+        discover_tables_node, fetch_schemas_node, llm_doc_node, synthesizer_node,
+    )
 
     try:
-        params = _json.loads(message)
+        params = json.loads(message)
     except Exception:
-        yield _json.dumps({"type": "error", "content": "Message invalide : JSON attendu du formulaire Data Dictionary."}) + "\n"
+        yield json.dumps({"type": "error", "content": "Message invalide : JSON attendu du formulaire Data Dictionary."}) + "\n"
         return
 
-    initial_state = {
-        "messages": [HumanMessage(content=message)],
-        "tables": params.get("tables", []),
-        "sample_rows": max(1, min(20, params.get("sample_rows", 5))),
-        "language": params.get("language", "fr"),
-        "db_type": "clickhouse",
-        "discovered_tables": [],
-        "table_schemas": None,
-        "dictionary": None,
-        "final_answer": None,
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "last_error": None,
-    }
-
     try:
-        final_answer_from_stream = None
-        dictionary_from_stream = None
-        last_error_from_stream = None
+        state: dict = {
+            "messages": [HumanMessage(content=message)],
+            "tables": params.get("tables", []),
+            "sample_rows": max(1, min(20, params.get("sample_rows", 5))),
+            "language": params.get("language", "fr"),
+            "db_type": "clickhouse",
+            "discovered_tables": [],
+            "table_schemas": None,
+            "dictionary": None,
+            "final_answer": None,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "last_error": None,
+        }
 
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            if event.get("final_answer"):
-                final_answer_from_stream = event["final_answer"]
-            if event.get("dictionary"):
-                dictionary_from_stream = event["dictionary"]
-            if event.get("last_error"):
-                last_error_from_stream = event["last_error"]
+        # discover_tables_node
+        state = _merge_state(state, discover_tables_node(state))
+        await asyncio.sleep(0)
+        if state.get("last_error"):
+            yield json.dumps({"type": "error", "content": state["last_error"]}) + "\n"
+            return
+        for msg in (state.get("messages") or []):
+            if hasattr(msg, "content") and msg.content and "[DD]" in msg.content:
+                yield json.dumps({"type": "dd_progress", "content": msg.content}) + "\n"
+        await asyncio.sleep(0)
 
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content and "[DD]" in last.content:
-                    yield _json.dumps({"type": "dd_progress", "content": last.content}) + "\n"
-                    await asyncio.sleep(0)
+        # fetch_schemas_node
+        state = _merge_state(state, fetch_schemas_node(state))
+        await asyncio.sleep(0)
+        if state.get("last_error"):
+            yield json.dumps({"type": "error", "content": state["last_error"]}) + "\n"
+            return
+        for msg in (state.get("messages") or []):
+            if hasattr(msg, "content") and msg.content and "[DD]" in msg.content:
+                yield json.dumps({"type": "dd_progress", "content": msg.content}) + "\n"
+        await asyncio.sleep(0)
 
-        try:
-            final_state = graph.get_state(config)
-            vals = final_state.values if final_state else {}
-        except Exception:
-            vals = {}
+        # llm_doc_node
+        state = _merge_state(state, llm_doc_node(state))
+        await asyncio.sleep(0)
 
-        last_error = vals.get("last_error") or last_error_from_stream
-        if last_error:
-            yield _json.dumps({"type": "error", "content": last_error}) + "\n"
+        # synthesizer_node
+        state = _merge_state(state, synthesizer_node(state))
+
+        if state.get("last_error"):
+            yield json.dumps({"type": "error", "content": state["last_error"]}) + "\n"
             return
 
-        dictionary = vals.get("dictionary") or dictionary_from_stream
+        dictionary = state.get("dictionary")
         if dictionary:
-            yield _json.dumps({"type": "dd_result", "dictionary": dictionary}) + "\n"
+            yield json.dumps({"type": "dd_result", "dictionary": dictionary}) + "\n"
 
-        final_answer = vals.get("final_answer") or final_answer_from_stream or ""
+        final_answer = state.get("final_answer") or ""
         if final_answer:
-            yield _json.dumps({"type": "final", "content": final_answer}) + "\n"
+            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+
     except Exception as e:
-        logger.error("Data dictionary agent error: %s", e)
-        yield _json.dumps({"type": "error", "content": str(e)}) + "\n"
+        logger.error("Data dictionary agent error: %s", e, exc_info=True)
+        yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_web_scraper(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent Web Scraper (Playwright)."""
-    graph = _get_web_scraper()
-    thread_id = f"ws_{session_id}_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
-
-    history = _load_conversation_history(session_id)
-    initial_state = {
-        "messages": history + [HumanMessage(content=message)],
-        "user_request": message,
-        "final_answer": None,
-        "iteration_count": 0,
-        "agent_id": agent_id,
-        "session_id": session_id,
-    }
+    """
+    Web Scraper — plain Python ReAct loop, no LangGraph/MemorySaver.
+    """
+    from backend.tools.web_scraper_tools import make_web_scraper_tools
+    from backend.graphs.web_scraper_graph import WEB_SCRAPER_SYSTEM
 
     try:
-        final_answer_from_stream = None
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            if event.get("final_answer"):
-                final_answer_from_stream = event["final_answer"]
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    content = last.content
-                    if "SCREENSHOT_CAPTURED:" in content:
-                        lines = content.split("\n")
-                        fn_line = next((l for l in lines if l.startswith("SCREENSHOT_CAPTURED:")), "")
-                        filename = fn_line.replace("SCREENSHOT_CAPTURED:", "").strip()
-                        if filename:
-                            yield json.dumps({
-                                "type": "screenshot_ready",
-                                "filename": filename,
-                                "screenshot_url": f"/api/charts/scraper-screenshot/{filename}",
-                            }) + "\n"
-                        clean = "\n".join(
-                            l for l in lines if not l.startswith("SCREENSHOT_CAPTURED:")
-                        ).strip()
-                        if clean:
-                            yield json.dumps({"type": "token", "content": clean}) + "\n"
-                    else:
-                        yield json.dumps({"type": "token", "content": content}) + "\n"
-                    await asyncio.sleep(0)
-                if hasattr(last, "tool_calls") and last.tool_calls:
-                    for tc in last.tool_calls:
+        agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
+        extra = agent_cfg.get("extra_config", {})
+        allowed_urls = extra.get("allowed_urls", [])
+        headless = extra.get("headless", True)
+        screenshots_dir = extra.get("screenshots_dir", "data/web_scraper_screenshots")
+        custom_prompt = agent_cfg.get("system_prompt", "")
+
+        tools = make_web_scraper_tools(
+            agent_id=agent_id,
+            session_id=session_id,
+            allowed_urls=allowed_urls,
+            headless=headless,
+            screenshots_dir=screenshots_dir,
+        )
+        llm = build_llm()
+        if tools:
+            llm = llm.bind_tools(tools)
+        tool_map = {t.name: t for t in tools}
+
+        system_content = custom_prompt if custom_prompt else WEB_SCRAPER_SYSTEM
+        if allowed_urls:
+            system_content += "\n\n## URLs autorisées pour cette session\n" + "\n".join(f"- {u}" for u in allowed_urls)
+
+        messages: list = (
+            [SystemMessage(content=system_content)]
+            + _load_conversation_history(session_id)
+            + [HumanMessage(content=message)]
+        )
+        final_answer = ""
+
+        for iteration in range(25):
+            response = llm.invoke(messages)
+            raw_content = response.content or ""
+            raw_tool_calls = list(getattr(response, "tool_calls", None) or [])
+            messages.append(AIMessage(content=raw_content, tool_calls=raw_tool_calls))
+
+            if not raw_tool_calls:
+                final_answer = raw_content
+                break
+
+            for tc in raw_tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args") or {}
+                tool_call_id = tc.get("id") or f"call_{iteration}_{tool_name}"
+
+                yield json.dumps({"type": "tool_call", "tool": tool_name,
+                                  "args": str(tool_args)[:200]}) + "\n"
+
+                fn = tool_map.get(tool_name)
+                try:
+                    tool_result = fn.invoke(tool_args) if fn else f"Unknown tool: {tool_name}"
+                except Exception as exc:
+                    tool_result = f"Tool error: {exc}"
+                tool_content = str(tool_result) if tool_result is not None else ""
+                messages.append(ToolMessage(content=tool_content, tool_call_id=tool_call_id, name=tool_name))
+
+                if "SCREENSHOT_CAPTURED:" in tool_content:
+                    lines = tool_content.split("\n")
+                    fn_line = next((l for l in lines if l.startswith("SCREENSHOT_CAPTURED:")), "")
+                    filename = fn_line.replace("SCREENSHOT_CAPTURED:", "").strip()
+                    if filename:
                         yield json.dumps({
-                            "type": "tool_call",
-                            "tool": tc["name"],
-                            "args": str(tc.get("args", {}))[:200],
+                            "type": "screenshot_ready",
+                            "filename": filename,
+                            "screenshot_url": f"/api/charts/scraper-screenshot/{filename}",
                         }) + "\n"
-                        await asyncio.sleep(0)
+                await asyncio.sleep(0)
 
-        try:
-            final_state = graph.get_state(config)
-            final_answer = final_state.values.get("final_answer") or final_answer_from_stream or ""
-        except Exception:
-            final_answer = final_answer_from_stream or ""
-
-        if final_answer:
-            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+        if not final_answer:
+            final_answer = "❌ Impossible de terminer le scraping en moins de 25 itérations."
+        yield json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
-        logger.error("Web Scraper agent error: %s", e)
+        logger.error("Web Scraper agent error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
 async def _run_chart_agent(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    """Runner SSE pour l'agent Charts & Presentations."""
-    graph = _get_chart_agent()
-    thread_id = f"cp_{session_id}_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
-
-    history = _load_conversation_history(session_id)
-    initial_state = {
-        "messages": history + [HumanMessage(content=message)],
-        "user_request": message,
-        "final_answer": None,
-        "iteration_count": 0,
-        "agent_id": agent_id,
-        "session_id": session_id,
-    }
+    """
+    Charts & Presentations — plain Python ReAct loop, no LangGraph/MemorySaver.
+    """
+    from backend.tools.chart_tools import make_chart_tools
+    from backend.graphs.chart_graph import CHART_SYSTEM
 
     try:
-        final_answer_from_stream = None
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            if event.get("final_answer"):
-                final_answer_from_stream = event["final_answer"]
-            msgs = event.get("messages", [])
-            if msgs:
-                last = msgs[-1]
-                if hasattr(last, "content") and last.content:
-                    content = last.content
-                    # Detect chart creation signals
-                    if "CHART_CREATED:" in content:
-                        lines = content.split("\n")
-                        for line in lines:
-                            if line.startswith("CHART_CREATED:"):
-                                filename = line.replace("CHART_CREATED:", "").strip()
-                                yield json.dumps({
-                                    "type": "chart_ready",
-                                    "filename": filename,
-                                    "chart_url": f"/api/charts/image/{filename}",
-                                }) + "\n"
-                        clean = "\n".join(l for l in lines if not l.startswith("CHART_CREATED:")).strip()
-                        if clean:
-                            yield json.dumps({"type": "token", "content": clean}) + "\n"
-                    elif "PRESENTATION_SAVED:" in content:
-                        lines = content.split("\n")
-                        fn_line = next((l for l in lines if l.startswith("PRESENTATION_SAVED:")), "")
-                        filename = fn_line.replace("PRESENTATION_SAVED:", "").strip()
-                        if filename:
+        agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
+        custom_prompt = agent_cfg.get("system_prompt", "")
+
+        tools = make_chart_tools(session_id=session_id)
+        llm = build_llm()
+        if tools:
+            llm = llm.bind_tools(tools)
+        tool_map = {t.name: t for t in tools}
+
+        system_content = custom_prompt if custom_prompt else CHART_SYSTEM
+        messages: list = (
+            [SystemMessage(content=system_content)]
+            + _load_conversation_history(session_id)
+            + [HumanMessage(content=message)]
+        )
+        final_answer = ""
+
+        for iteration in range(20):
+            response = llm.invoke(messages)
+            raw_content = response.content or ""
+            raw_tool_calls = list(getattr(response, "tool_calls", None) or [])
+            messages.append(AIMessage(content=raw_content, tool_calls=raw_tool_calls))
+
+            if not raw_tool_calls:
+                final_answer = raw_content
+                break
+
+            for tc in raw_tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args") or {}
+                tool_call_id = tc.get("id") or f"call_{iteration}_{tool_name}"
+
+                yield json.dumps({"type": "tool_call", "tool": tool_name,
+                                  "args": str(tool_args)[:200]}) + "\n"
+
+                fn = tool_map.get(tool_name)
+                try:
+                    tool_result = fn.invoke(tool_args) if fn else f"Unknown tool: {tool_name}"
+                except Exception as exc:
+                    tool_result = f"Tool error: {exc}"
+                tool_content = str(tool_result) if tool_result is not None else ""
+                messages.append(ToolMessage(content=tool_content, tool_call_id=tool_call_id, name=tool_name))
+
+                if "CHART_CREATED:" in tool_content:
+                    lines = tool_content.split("\n")
+                    for line in lines:
+                        if line.startswith("CHART_CREATED:"):
+                            filename = line.replace("CHART_CREATED:", "").strip()
                             yield json.dumps({
-                                "type": "presentation_ready",
+                                "type": "chart_ready",
                                 "filename": filename,
-                                "download_url": f"/api/charts/presentation/{filename}",
+                                "chart_url": f"/api/charts/image/{filename}",
                             }) + "\n"
-                        clean = "\n".join(l for l in lines if not l.startswith("PRESENTATION_SAVED:")).strip()
-                        if clean:
-                            yield json.dumps({"type": "token", "content": clean}) + "\n"
-                    else:
-                        yield json.dumps({"type": "token", "content": content}) + "\n"
-                    await asyncio.sleep(0)
-                if hasattr(last, "tool_calls") and last.tool_calls:
-                    for tc in last.tool_calls:
+
+                if "PRESENTATION_SAVED:" in tool_content:
+                    lines = tool_content.split("\n")
+                    fn_line = next((l for l in lines if l.startswith("PRESENTATION_SAVED:")), "")
+                    filename = fn_line.replace("PRESENTATION_SAVED:", "").strip()
+                    if filename:
                         yield json.dumps({
-                            "type": "tool_call",
-                            "tool": tc["name"],
-                            "args": str(tc.get("args", {}))[:200],
+                            "type": "presentation_ready",
+                            "filename": filename,
+                            "download_url": f"/api/charts/presentation/{filename}",
                         }) + "\n"
-                        await asyncio.sleep(0)
+                await asyncio.sleep(0)
 
-        try:
-            final_state = graph.get_state(config)
-            final_answer = final_state.values.get("final_answer") or final_answer_from_stream or ""
-        except Exception:
-            final_answer = final_answer_from_stream or ""
-
-        if final_answer:
-            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+        if not final_answer:
+            final_answer = "❌ Impossible de générer les graphiques en moins de 20 itérations."
+        yield json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
-        logger.error("Chart agent error: %s", e)
+        logger.error("Chart agent error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
 
 
