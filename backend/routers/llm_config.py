@@ -26,6 +26,36 @@ def update_llm_config(config: LLMConfig):
 @router.post("/test")
 async def test_llm_connection(config: LLMConfig):
     """Probe the LLM endpoint to verify connectivity."""
+
+    # ── n8n webhook test ──────────────────────────────────────────────────────
+    if config.provider.value == "n8n":
+        if not config.webhook_url:
+            return {"success": False, "error": "Aucune URL de webhook configurée."}
+        try:
+            async with httpx.AsyncClient(timeout=15, verify=config.verify_ssl) as client:
+                resp = await client.post(
+                    config.webhook_url,
+                    json={"messages": [{"role": "user", "content": "Hello"}]},
+                )
+                if resp.status_code == 200:
+                    return {
+                        "success": True,
+                        "status_code": resp.status_code,
+                        "endpoint": config.webhook_url,
+                    }
+                return {
+                    "success": False,
+                    "status_code": resp.status_code,
+                    "detail": resp.text[:500],
+                }
+        except httpx.ConnectError as e:
+            return {"success": False, "error": f"Connexion refusée — vérifiez que le webhook n8n est actif. ({e})"}
+        except httpx.ConnectTimeout as e:
+            return {"success": False, "error": f"Timeout — le webhook ne répond pas dans le délai imparti. ({e})"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ── Standard OpenAI-compatible test ──────────────────────────────────────
     base = config.base_url.rstrip("/")
 
     # Normalisation automatique pour Ollama : ajouter /v1 si absent

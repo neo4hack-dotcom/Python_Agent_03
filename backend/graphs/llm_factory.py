@@ -20,13 +20,107 @@ Ce chargement « à la demande » (lazy) garantit que les agents utilisent toujo
 la config la plus récente sans avoir besoin de redémarrer le serveur.
 """
 import logging
-from typing import Optional
+from typing import Any, Iterator, List, Optional
 import httpx
 from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from backend.database import db, COLL_LLM_CONFIG
 from backend.models.llm_config import LLMConfig
 
 logger = logging.getLogger(__name__)
+
+
+# ── n8n Webhook LLM ──────────────────────────────────────────────────────────
+
+def _extract_n8n_content(data: Any) -> str:
+    """
+    Extract a text string from the n8n webhook response.
+
+    Supports several common n8n output formats:
+      - OpenAI-compatible: {"choices": [{"message": {"content": "..."}}]}
+      - Simple dict:       {"content": "..."} / {"message": "..."} / {"output": "..."} / {"text": "..."}
+      - Wrapped list:      [{"content": "..."}, ...]   (n8n often returns arrays)
+      - Plain string:      "Hello"
+    """
+    if isinstance(data, list) and data:
+        data = data[0]  # n8n wraps everything in an array by default
+    if isinstance(data, dict):
+        # OpenAI format
+        if "choices" in data and data["choices"]:
+            msg = data["choices"][0].get("message", {})
+            return msg.get("content") or ""
+        # Simple key search (first match wins)
+        for key in ("content", "message", "output", "text", "response", "answer"):
+            if key in data and data[key] is not None:
+                return str(data[key])
+    return str(data) if data is not None else ""
+
+
+class ChatN8N(BaseChatModel):
+    """
+    LangChain chat model that delegates inference to an n8n webhook.
+
+    The webhook receives a POST request with the conversation messages in
+    OpenAI format and must return a JSON response containing the assistant reply.
+
+    Accepted response formats:
+      - OpenAI-compatible : {"choices": [{"message": {"content": "..."}}]}
+      - Simple dict       : {"content": "..."} or {"message": "..."} or {"output": "..."}
+      - n8n array wrapper : [{"content": "..."}]  (n8n wraps responses in arrays)
+
+    Tool calls are NOT forwarded to the webhook (n8n handles its own workflow
+    logic). The model therefore behaves as a plain text generator.
+    """
+
+    webhook_url: str
+    timeout: int = 120
+    verify_ssl: bool = True
+
+    @property
+    def _llm_type(self) -> str:
+        return "n8n"
+
+    def _convert_messages(self, messages: List[BaseMessage]) -> List[dict]:
+        role_map = {"human": "user", "ai": "assistant", "system": "system", "tool": "tool"}
+        result = []
+        for m in messages:
+            role = role_map.get(getattr(m, "type", ""), "user")
+            content = m.content if isinstance(m.content, str) else str(m.content or "")
+            result.append({"role": role, "content": content})
+        return result
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        payload = {"messages": self._convert_messages(messages)}
+        with httpx.Client(timeout=self.timeout, verify=self.verify_ssl) as client:
+            resp = client.post(self.webhook_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        content = _extract_n8n_content(data)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+
+    async def _agenerate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        payload = {"messages": self._convert_messages(messages)}
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+            resp = await client.post(self.webhook_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        content = _extract_n8n_content(data)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+
 
 # ── Config par défaut ────────────────────────────────────────────────────────
 # Instance LLMConfig avec les valeurs par défaut (voir models/llm_config.py) :
@@ -92,6 +186,19 @@ def build_llm(streaming: bool = False, temperature: Optional[float] = None) -> C
             yield chunk.content
     """
     cfg = get_llm_config()
+
+    # n8n webhook — bypass ChatOpenAI entirely
+    if cfg.provider.value == "n8n":
+        if not cfg.webhook_url:
+            raise ValueError(
+                "n8n provider selected but no webhook_url is configured. "
+                "Please set the webhook URL in the LLM configuration."
+            )
+        return ChatN8N(
+            webhook_url=cfg.webhook_url,
+            timeout=cfg.timeout,
+            verify_ssl=cfg.verify_ssl,
+        )
 
     # Build a custom httpx client so we can control SSL verification.
     # verify=False is required for self-signed certificates (LM Studio HTTPS,

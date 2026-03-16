@@ -8,6 +8,7 @@ class LLMProvider(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
     LMSTUDIO = "lmstudio"
     CUSTOM = "custom"
+    N8N = "n8n"
 
 
 class LLMConfig(BaseModel):
@@ -20,6 +21,8 @@ class LLMConfig(BaseModel):
     timeout: int = Field(default=120, ge=10, le=600, description="Request timeout in seconds")
     streaming: bool = Field(default=True)
     verify_ssl: bool = Field(default=True, description="Verify SSL certificate (disable for self-signed certs)")
+    # n8n webhook — used only when provider == "n8n"
+    webhook_url: Optional[str] = Field(default=None, description="n8n webhook URL (POST endpoint)")
 
     class Config:
         json_schema_extra = {
@@ -33,5 +36,6 @@ class LLMConfig(BaseModel):
                 "timeout": 120,
                 "streaming": True,
                 "verify_ssl": True,
+                "webhook_url": None,
             }
         }

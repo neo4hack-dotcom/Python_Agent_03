@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Cpu, CheckCircle, XCircle, RefreshCw, Save, Wifi } from 'lucide-react'
+import { Cpu, CheckCircle, XCircle, RefreshCw, Save, Wifi, Webhook } from 'lucide-react'
 import { llmApi } from '../services/api'
 import { useToast } from '../components/Toast'
 
@@ -8,6 +8,7 @@ const PROVIDERS = [
   { value: 'lmstudio', label: 'LM Studio', defaultUrl: 'http://localhost:1234/v1' },
   { value: 'openai_compatible', label: 'OpenAI Compatible', defaultUrl: 'https://api.openai.com/v1' },
   { value: 'custom', label: 'Custom', defaultUrl: '' },
+  { value: 'n8n', label: 'n8n Webhook', defaultUrl: '' },
 ]
 
 export default function LLMConfigPage() {
@@ -22,6 +23,7 @@ export default function LLMConfigPage() {
     timeout: 120,
     streaming: true,
     verify_ssl: true,
+    webhook_url: '',
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -30,9 +32,11 @@ export default function LLMConfigPage() {
   const [models, setModels] = useState([])
   const [loadingModels, setLoadingModels] = useState(false)
 
+  const isN8N = config.provider === 'n8n'
+
   useEffect(() => {
     llmApi.get().then((r) => {
-      setConfig(r.data)
+      setConfig({ webhook_url: '', ...r.data })
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [])
@@ -40,6 +44,8 @@ export default function LLMConfigPage() {
   const handleProviderChange = (provider) => {
     const p = PROVIDERS.find((x) => x.value === provider)
     setConfig((c) => ({ ...c, provider, base_url: p?.defaultUrl || c.base_url }))
+    setModels([])
+    setTestResult(null)
   }
 
   const handleSave = async () => {
@@ -113,7 +119,7 @@ export default function LLMConfigPage() {
 
           {/* Test result banner */}
           {testResult && (
-            <div className={`card`} style={{
+            <div className="card" style={{
               borderColor: testResult.success ? 'var(--success)' : 'var(--error)',
               background: testResult.success ? 'rgba(34,197,94,0.05)' : 'rgba(239,68,68,0.05)',
             }}>
@@ -128,79 +134,150 @@ export default function LLMConfigPage() {
             </div>
           )}
 
-          {/* Provider & Endpoint */}
+          {/* Provider selection */}
           <div className="card">
             <div className="card-header">
-              <h3>Point d'accès HTTP</h3>
+              <h3>Fournisseur LLM</h3>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div className="form-group">
-                <label className="form-label">Fournisseur LLM</label>
-                <select
-                  className="select"
-                  value={config.provider}
-                  onChange={(e) => handleProviderChange(e.target.value)}
-                >
-                  {PROVIDERS.map((p) => (
-                    <option key={p.value} value={p.value}>{p.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">URL de base (OpenAI-compatible)</label>
-                <input
-                  className="input"
-                  value={config.base_url}
-                  onChange={(e) => setConfig((c) => ({ ...c, base_url: e.target.value }))}
-                  placeholder="http://localhost:11434/v1"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Clé API (optionnel pour usage local)</label>
-                <input
-                  className="input"
-                  type="password"
-                  value={config.api_key}
-                  onChange={(e) => setConfig((c) => ({ ...c, api_key: e.target.value }))}
-                  placeholder="ollama / sk-xxx / ..."
-                />
-              </div>
+            <div className="form-group">
+              <label className="form-label">Type de fournisseur</label>
+              <select
+                className="select"
+                value={config.provider}
+                onChange={(e) => handleProviderChange(e.target.value)}
+              >
+                {PROVIDERS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
             </div>
           </div>
 
-          {/* Model selection */}
-          <div className="card">
-            <div className="card-header">
-              <h3>Modèle</h3>
-              <button className="btn btn-secondary btn-sm" onClick={handleLoadModels} disabled={loadingModels}>
-                {loadingModels ? <div className="spinner" style={{ width: 12, height: 12 }} /> : <RefreshCw size={13} />}
-                Charger les modèles
-              </button>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div className="form-group">
-                <label className="form-label">Nom du modèle</label>
-                {models.length > 0 ? (
-                  <select
-                    className="select"
-                    value={config.model}
-                    onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
-                  >
-                    {models.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                ) : (
+          {/* n8n webhook config */}
+          {isN8N && (
+            <div className="card" style={{ borderColor: 'rgba(234,88,12,0.4)', background: 'rgba(234,88,12,0.03)' }}>
+              <div className="card-header">
+                <div className="flex items-center gap-2">
+                  <Webhook size={16} color="#ea580c" />
+                  <h3 style={{ color: '#ea580c' }}>n8n Webhook</h3>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div className="form-group">
+                  <label className="form-label">URL du webhook</label>
                   <input
                     className="input"
-                    value={config.model}
-                    onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
-                    placeholder="llama3.2 / mistral / qwen2.5 / ..."
+                    value={config.webhook_url || ''}
+                    onChange={(e) => setConfig((c) => ({ ...c, webhook_url: e.target.value }))}
+                    placeholder="https://mon-instance.n8n.cloud/webhook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
                   />
-                )}
+                  <span className="text-sm text-muted" style={{ marginTop: 4 }}>
+                    URL POST du webhook n8n qui reçoit les messages et retourne la réponse du LLM.
+                  </span>
+                </div>
+
+                {/* n8n format info */}
+                <div style={{
+                  padding: '12px 14px', borderRadius: 8,
+                  background: 'rgba(234,88,12,0.08)', border: '1px solid rgba(234,88,12,0.2)',
+                  fontSize: 13, lineHeight: 1.7,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 8, color: '#ea580c' }}>
+                    Format attendu par le webhook
+                  </div>
+                  <div style={{ color: 'var(--text-secondary)' }}>
+                    <strong>Corps de la requête (POST) :</strong>
+                    <pre style={{
+                      marginTop: 6, marginBottom: 10, padding: '8px 10px',
+                      background: 'rgba(0,0,0,0.2)', borderRadius: 6, fontSize: 12,
+                      overflowX: 'auto',
+                    }}>{`{
+  "messages": [
+    { "role": "system",    "content": "..." },
+    { "role": "user",      "content": "..." },
+    { "role": "assistant", "content": "..." }
+  ]
+}`}</pre>
+                    <strong>Réponse acceptée (l'une ou l'autre) :</strong>
+                    <pre style={{
+                      marginTop: 6, padding: '8px 10px',
+                      background: 'rgba(0,0,0,0.2)', borderRadius: 6, fontSize: 12,
+                      overflowX: 'auto',
+                    }}>{`{ "content": "Réponse du LLM..." }
+{ "message": "Réponse du LLM..." }
+{ "output":  "Réponse du LLM..." }
+[{ "content": "..." }]  ← tableau n8n natif
+{ "choices": [{ "message": { "content": "..." } }] }`}</pre>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* Standard endpoint config (hidden for n8n) */}
+          {!isN8N && (
+            <div className="card">
+              <div className="card-header">
+                <h3>Point d'accès HTTP</h3>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div className="form-group">
+                  <label className="form-label">URL de base (OpenAI-compatible)</label>
+                  <input
+                    className="input"
+                    value={config.base_url}
+                    onChange={(e) => setConfig((c) => ({ ...c, base_url: e.target.value }))}
+                    placeholder="http://localhost:11434/v1"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Clé API (optionnel pour usage local)</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={config.api_key}
+                    onChange={(e) => setConfig((c) => ({ ...c, api_key: e.target.value }))}
+                    placeholder="ollama / sk-xxx / ..."
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Model selection (hidden for n8n) */}
+          {!isN8N && (
+            <div className="card">
+              <div className="card-header">
+                <h3>Modèle</h3>
+                <button className="btn btn-secondary btn-sm" onClick={handleLoadModels} disabled={loadingModels}>
+                  {loadingModels ? <div className="spinner" style={{ width: 12, height: 12 }} /> : <RefreshCw size={13} />}
+                  Charger les modèles
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div className="form-group">
+                  <label className="form-label">Nom du modèle</label>
+                  {models.length > 0 ? (
+                    <select
+                      className="select"
+                      value={config.model}
+                      onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
+                    >
+                      {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  ) : (
+                    <input
+                      className="input"
+                      value={config.model}
+                      onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
+                      placeholder="llama3.2 / mistral / qwen2.5 / ..."
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Parameters */}
           <div className="card">
@@ -208,28 +285,32 @@ export default function LLMConfigPage() {
               <h3>Paramètres d'inférence</h3>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div className="form-group">
-                <label className="form-label">Température ({config.temperature})</label>
-                <input
-                  type="range" min="0" max="2" step="0.05"
-                  value={config.temperature}
-                  onChange={(e) => setConfig((c) => ({ ...c, temperature: parseFloat(e.target.value) }))}
-                  style={{ width: '100%', accentColor: 'var(--accent)' }}
-                />
-                <div className="flex justify-between text-sm text-muted">
-                  <span>0 (précis)</span><span>2 (créatif)</span>
+              {!isN8N && (
+                <div className="form-group">
+                  <label className="form-label">Température ({config.temperature})</label>
+                  <input
+                    type="range" min="0" max="2" step="0.05"
+                    value={config.temperature}
+                    onChange={(e) => setConfig((c) => ({ ...c, temperature: parseFloat(e.target.value) }))}
+                    style={{ width: '100%', accentColor: 'var(--accent)' }}
+                  />
+                  <div className="flex justify-between text-sm text-muted">
+                    <span>0 (précis)</span><span>2 (créatif)</span>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div className="form-group">
-                <label className="form-label">Tokens max</label>
-                <input
-                  className="input"
-                  type="number" min="64" max="32768" step="256"
-                  value={config.max_tokens}
-                  onChange={(e) => setConfig((c) => ({ ...c, max_tokens: parseInt(e.target.value) }))}
-                />
-              </div>
+              {!isN8N && (
+                <div className="form-group">
+                  <label className="form-label">Tokens max</label>
+                  <input
+                    className="input"
+                    type="number" min="64" max="32768" step="256"
+                    value={config.max_tokens}
+                    onChange={(e) => setConfig((c) => ({ ...c, max_tokens: parseInt(e.target.value) }))}
+                  />
+                </div>
+              )}
 
               <div className="form-group">
                 <label className="form-label">Timeout (secondes)</label>
@@ -241,21 +322,23 @@ export default function LLMConfigPage() {
                 />
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Streaming</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8 }}>
-                  <input
-                    type="checkbox"
-                    id="streaming"
-                    checked={config.streaming}
-                    onChange={(e) => setConfig((c) => ({ ...c, streaming: e.target.checked }))}
-                    style={{ width: 16, height: 16, accentColor: 'var(--accent)' }}
-                  />
-                  <label htmlFor="streaming" style={{ cursor: 'pointer', color: 'var(--text-secondary)' }}>
-                    Activer le streaming des tokens
-                  </label>
+              {!isN8N && (
+                <div className="form-group">
+                  <label className="form-label">Streaming</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8 }}>
+                    <input
+                      type="checkbox"
+                      id="streaming"
+                      checked={config.streaming}
+                      onChange={(e) => setConfig((c) => ({ ...c, streaming: e.target.checked }))}
+                      style={{ width: 16, height: 16, accentColor: 'var(--accent)' }}
+                    />
+                    <label htmlFor="streaming" style={{ cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                      Activer le streaming des tokens
+                    </label>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="form-group">
                 <label className="form-label">Vérification SSL</label>
@@ -277,7 +360,7 @@ export default function LLMConfigPage() {
                     background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
                     fontSize: 12, color: '#f59e0b',
                   }}>
-                    ⚠️ Vérification SSL désactivée — à utiliser uniquement avec des serveurs locaux de confiance (certificat auto-signé, LM Studio HTTPS, proxy interne).
+                    ⚠️ Vérification SSL désactivée — à utiliser uniquement avec des serveurs locaux de confiance.
                   </div>
                 )}
               </div>
@@ -285,18 +368,20 @@ export default function LLMConfigPage() {
           </div>
 
           {/* Info */}
-          <div className="card" style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.3)' }}>
-            <div className="flex items-center gap-2" style={{ marginBottom: 8 }}>
-              <Cpu size={16} color="var(--accent-light)" />
-              <span style={{ fontWeight: 600, color: 'var(--accent-light)' }}>Compatibilité</span>
+          {!isN8N && (
+            <div className="card" style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.3)' }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 8 }}>
+                <Cpu size={16} color="var(--accent-light)" />
+                <span style={{ fontWeight: 600, color: 'var(--accent-light)' }}>Compatibilité</span>
+              </div>
+              <p className="text-sm text-secondary" style={{ lineHeight: 1.7 }}>
+                Cette plateforme supporte tout endpoint compatible avec l'API OpenAI.<br />
+                <strong>Ollama</strong>: <code>http://localhost:11434/v1</code> — clé: <code>ollama</code><br />
+                <strong>LM Studio</strong>: <code>http://localhost:1234/v1</code> — clé: <code>lm-studio</code><br />
+                <strong>vLLM</strong>: <code>http://localhost:8000/v1</code> — clé: quelconque
+              </p>
             </div>
-            <p className="text-sm text-secondary" style={{ lineHeight: 1.7 }}>
-              Cette plateforme supporte tout endpoint compatible avec l'API OpenAI.<br />
-              <strong>Ollama</strong>: <code>http://localhost:11434/v1</code> — clé: <code>ollama</code><br />
-              <strong>LM Studio</strong>: <code>http://localhost:1234/v1</code> — clé: <code>lm-studio</code><br />
-              <strong>vLLM</strong>: <code>http://localhost:8000/v1</code> — clé: quelconque
-            </p>
-          </div>
+          )}
         </div>
       </div>
     </div>
