@@ -122,18 +122,26 @@ def sanitize_messages(messages: list) -> list:
       - A ToolMessage result is None
       - Any other message with missing content
 
-    This function replaces None content with "" and is safe to call on any
-    message list without changing behaviour for non-None content.
+    Uses object.__setattr__ to bypass Pydantic's validation/frozen constraints —
+    the most reliable approach regardless of Pydantic v1/v2 and LangChain version.
     """
-    from langchain_core.messages import BaseMessage
-
-    sanitized = []
     for msg in messages:
         if hasattr(msg, "content") and msg.content is None:
-            # Create a copy with content="" using model_copy (Pydantic v2) or copy (v1)
             try:
-                msg = msg.model_copy(update={"content": ""})
-            except AttributeError:
-                msg = msg.copy(update={"content": ""})
-        sanitized.append(msg)
-    return sanitized
+                object.__setattr__(msg, "content", "")
+            except Exception:
+                pass
+    return messages
+
+
+def sanitize_response(response) -> None:
+    """
+    Sanitize an LLM response in-place so it is safe to store in LangGraph state.
+    Call this immediately after llm.invoke() to ensure content is never None
+    before the message is added to state.messages.
+    """
+    if hasattr(response, "content") and response.content is None:
+        try:
+            object.__setattr__(response, "content", "")
+        except Exception:
+            pass

@@ -51,7 +51,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 
 from .state import AnalystState
-from .llm_factory import build_llm, sanitize_messages
+from .llm_factory import build_llm, sanitize_messages, sanitize_response
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
 from backend.tools.sql_oracle import OracleSQLTool
 from backend.database import db, COLL_CONNECTIONS, COLL_AGENTS
@@ -411,6 +411,9 @@ def agent_react_node(state: AnalystState) -> Dict[str, Any]:
 
     # Appel LLM
     response = llm.invoke(full_messages)
+    # Sanitize response immediately — content=None from a tool-calling LLM response
+    # would re-enter state and cause 422 on the next iteration even after sanitize_messages
+    sanitize_response(response)
 
     iteration = state.get("iteration_count", 0) + 1
     updates: Dict[str, Any] = {
@@ -421,7 +424,7 @@ def agent_react_node(state: AnalystState) -> Dict[str, Any]:
     # Si pas de tool_calls OU limite atteinte → c'est la réponse finale
     has_tool_calls = bool(getattr(response, "tool_calls", None))
     if not has_tool_calls or iteration >= 8:
-        updates["final_answer"] = response.content
+        updates["final_answer"] = response.content or ""
 
     return updates
 

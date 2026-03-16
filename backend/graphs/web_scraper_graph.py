@@ -26,7 +26,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import WebScraperState
-from .llm_factory import build_llm, sanitize_messages
+from .llm_factory import build_llm, sanitize_messages, sanitize_response
 from backend.tools.web_scraper_tools import make_web_scraper_tools
 from backend.database import db, COLL_AGENTS
 
@@ -125,6 +125,7 @@ def build_web_scraper_graph():
 
         messages = sanitize_messages([SystemMessage(content=system_content)] + list(state.get("messages", [])))
         response = llm_with_tools.invoke(messages)
+        sanitize_response(response)
 
         # Detect final answer — no more tool calls
         is_final = not (hasattr(response, "tool_calls") and response.tool_calls)

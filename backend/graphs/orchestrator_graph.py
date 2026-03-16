@@ -47,7 +47,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import OrchestratorState
-from .llm_factory import build_llm, sanitize_messages
+from .llm_factory import build_llm, sanitize_messages, sanitize_response
 # Import des nœuds individuels du graphe analyste SQL pour appel direct
 # (sans passer par le graphe compilé, afin de contrôler le retry loop ici)
 from .analyst_graph import analyst_node, sql_tool_node, synthesizer_node as analyst_synthesizer_node
@@ -817,6 +817,7 @@ def reasoner_node(state: OrchestratorState) -> Dict[str, Any]:
 
     try:
         response = llm.invoke(sanitize_messages(messages))
+        sanitize_response(response)
         raw = response.content.strip()
         if "```json" in raw:
             raw = raw.split("```json")[1].split("```")[0].strip()
@@ -981,6 +982,7 @@ def planner_node(state: OrchestratorState) -> Dict[str, Any]:
 
     try:
         response = llm.invoke(sanitize_messages(messages))
+        sanitize_response(response)
         raw = response.content.strip()
 
         # Nettoyage des balises Markdown que certains LLMs ajoutent malgré les instructions
@@ -1496,6 +1498,7 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
 
     try:
         response = llm.invoke(sanitize_messages(messages))
+        sanitize_response(response)
         result_entry = {
             "task_id": task["id"],
             "task_description": task["description"],
@@ -1565,6 +1568,7 @@ def corrector_node(state: OrchestratorState) -> Dict[str, Any]:
     ]
 
     response = llm.invoke(sanitize_messages(messages))
+    sanitize_response(response)
     # Crée une copie de la tâche avec la description corrigée
     # (les autres champs comme agent_type, agent_id, depends_on restent identiques)
     corrected_task = dict(task)
@@ -1617,6 +1621,7 @@ def synthesizer_node(state: OrchestratorState) -> Dict[str, Any]:
     ]
 
     response = llm.invoke(sanitize_messages(messages))
+    sanitize_response(response)
 
     # Extraire le report_id depuis les worker_results si un rapport PDF a été généré
     report_id = None

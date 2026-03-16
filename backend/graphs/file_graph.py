@@ -31,7 +31,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import FileAgentState
-from .llm_factory import build_llm, sanitize_messages
+from .llm_factory import build_llm, sanitize_messages, sanitize_response
 from backend.tools.file_tools import make_file_tools
 from backend.database import db, COLL_AGENTS
 
@@ -109,6 +109,7 @@ def agent_node(state: FileAgentState) -> Dict[str, Any]:
         }
 
     response = llm_with_tools.invoke(messages)
+    sanitize_response(response)
     updates: Dict[str, Any] = {
         "messages": [response],
         "iteration_count": iteration + 1,
@@ -116,7 +117,7 @@ def agent_node(state: FileAgentState) -> Dict[str, Any]:
 
     # Si pas d'appel d'outil → réponse finale
     if not getattr(response, "tool_calls", None):
-        updates["final_answer"] = response.content
+        updates["final_answer"] = response.content or ""
 
     return updates
 
