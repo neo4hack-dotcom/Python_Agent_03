@@ -51,7 +51,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 
 from .state import AnalystState
-from .llm_factory import build_llm
+from .llm_factory import build_llm, sanitize_messages
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
 from backend.tools.sql_oracle import OracleSQLTool
 from backend.database import db, COLL_CONNECTIONS, COLL_AGENTS
@@ -125,19 +125,35 @@ REACT_SYSTEM_CLICKHOUSE = """You are a senior ClickHouse data analyst using tool
 ## Workflow (always follow this order):
 1. Call `list_tables` to see available tables
 2. Call `get_schema` with relevant table names to understand columns and ORDER BY keys
-3. Write optimized SQL and call `execute_query`
-4. If the query fails, read the error, fix the SQL, and retry with `execute_query`
-5. When you have the data, produce a comprehensive Markdown analysis
+3. If you need date/time info and it's unclear, apply the Clarification Protocol below
+4. Write optimized SQL and call `execute_query`
+5. If the query fails, read the error, fix the SQL, and retry with `execute_query`
+6. When you have the data, produce a comprehensive Markdown analysis
 
 ## ClickHouse SQL Rules (enforce strictly):
 - NEVER SELECT * — always explicit columns
 - Use `uniqCombined(col)` instead of `COUNT(DISTINCT col)` — 3-10x faster
 - ALWAYS filter on ORDER BY (sorting_key) columns in WHERE clause
 - Default LIMIT 100 unless more rows are truly needed
-- Time functions: `toStartOfDay(ts)`, `toStartOfHour(ts)`, `toYYYYMM(ts)`
 - Aggregations: `argMax(val, ts)`, `topK(10)(col)`, `any(col)`
 - Avoid JOINs; prefer `IN (SELECT ...)` subqueries
 - Handle `Array` columns with `arrayJoin()` or `arraySum()`, `arrayFilter()`
+- For GROUP BY time buckets: `toStartOfDay(ts)`, `toStartOfHour(ts)`, `toYYYYMM(ts)` are OK
+
+## Date Filtering Rules (CRITICAL — common source of errors):
+- NEVER use date/time functions in WHERE filters: NO today(), now(), yesterday(),
+  addDays(), subtractDays(), toDate(), toDateTime(), DATE_SUB() in WHERE clauses —
+  these cause errors on many ClickHouse deployments.
+- ALWAYS use BETWEEN with literal date strings in WHERE:
+  ✅  WHERE event_date BETWEEN '2024-01-01' AND '2024-12-31'
+  ✅  WHERE created_at BETWEEN '2024-03-01 00:00:00' AND '2024-03-31 23:59:59'
+  ❌  WHERE event_date >= today() - 30
+  ❌  WHERE event_date >= subtractDays(today(), 30)
+- When the user says "last month", "this year", "recent", etc., compute the
+  literal date range yourself and use BETWEEN. For example, if today is 2026-03-16:
+  "last month" → BETWEEN '2026-02-01' AND '2026-02-28'
+  "this year"  → BETWEEN '2026-01-01' AND '2026-12-31'
+  "last 30 days" → BETWEEN '2026-02-14' AND '2026-03-16'
 
 ## Schema Fetching Strategy (IMPORTANT for large databases):
 1. Call list_tables to discover available tables
@@ -145,6 +161,23 @@ REACT_SYSTEM_CLICKHOUSE = """You are a senior ClickHouse data analyst using tool
 3. Call get_schema(table_name, columns_filter="col1,col2,col3") for type details on ONLY the columns you will use in your SQL
 4. NEVER request all columns at once — only request what you actually need
 5. A table with 200 columns should only inject 5-10 column types into context
+
+## Clarification Protocol (IMPORTANT — ask before guessing):
+If, after fetching the schema, you face an ambiguity you CANNOT resolve alone:
+- Multiple date columns and no clear match to the user's question
+- The user requests a time range but no date range is specified and no default is obvious
+
+You MUST output ONLY this format as your final response (do NOT call any more tools):
+
+CLARIFICATION_NEEDED: <short question in the user's language>
+OPTIONS: <choice 1> | <choice 2> | <choice 3> | <choice 4 optional>
+
+Examples:
+CLARIFICATION_NEEDED: Quelle colonne de date utiliser pour le filtre temporel ?
+OPTIONS: event_date (date événement) | created_at (date création) | updated_at (dernière modif)
+
+CLARIFICATION_NEEDED: Sur quelle période souhaitez-vous analyser ?
+OPTIONS: Aujourd'hui | Cette semaine | Ce mois-ci (mars 2026) | Les 3 derniers mois
 
 ## Final Answer Format:
 When done (no more tool calls needed), write a comprehensive Markdown response:
@@ -157,7 +190,7 @@ When done (no more tool calls needed), write a comprehensive Markdown response:
 Always end with:
 
 ## 🔢 Actions Effectuées
-Numbered list of every tool call and action taken during this session (e.g. "1. Called list_tables", "2. Retrieved schema for table X", "3. Executed SQL query (N rows returned)", "4. Synthesized results").
+Numbered list of every tool call and action taken during this session.
 
 ## 🎯 Score de Confiance
 **Score : XX/100** — <one-line justification based on data quality and query success>
@@ -374,7 +407,7 @@ def agent_react_node(state: AnalystState) -> Dict[str, Any]:
         # Premier appel : initialiser avec la question
         history = [HumanMessage(content=state["user_question"])]
 
-    full_messages = [SystemMessage(content=system_prompt)] + history
+    full_messages = sanitize_messages([SystemMessage(content=system_prompt)] + history)
 
     # Appel LLM
     response = llm.invoke(full_messages)
@@ -509,7 +542,7 @@ def analyst_node(state: AnalystState) -> Dict[str, Any]:
                 "Please analyze the error and write a corrected SQL query."
             )
         )
-    full_messages = [SystemMessage(content=system_prompt)] + history
+    full_messages = sanitize_messages([SystemMessage(content=system_prompt)] + history)
     response = llm.invoke(full_messages)
     sql = response.content.strip()
     # Nettoyage des balises Markdown
@@ -591,7 +624,7 @@ def synthesizer_node(state: AnalystState) -> Dict[str, Any]:
             + (f"⚠️ Warning: {result.get('warning')}" if result.get("warning") else "")
         ),
     ]
-    response = llm.invoke(messages)
+    response = llm.invoke(sanitize_messages(messages))
     return {
         "final_answer": response.content,
         "messages": [AIMessage(content=response.content)],

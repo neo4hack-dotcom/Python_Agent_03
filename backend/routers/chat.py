@@ -281,7 +281,16 @@ async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGen
         final_state = graph.get_state(config)
         final_answer = final_state.values.get("final_answer", "")
         if final_answer:
-            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+            if final_answer.strip().startswith("CLARIFICATION_NEEDED:"):
+                lines = [l.strip() for l in final_answer.strip().splitlines()]
+                question = lines[0].replace("CLARIFICATION_NEEDED:", "").strip()
+                options = []
+                for line in lines:
+                    if line.startswith("OPTIONS:"):
+                        options = [o.strip() for o in line.replace("OPTIONS:", "").split("|") if o.strip()]
+                yield json.dumps({"type": "human_validation", "content": question, "options": options}) + "\n"
+            else:
+                yield json.dumps({"type": "final", "content": final_answer}) + "\n"
     except Exception as e:
         logger.error("Analyst error: %s", e)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"

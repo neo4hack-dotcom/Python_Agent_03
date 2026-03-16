@@ -26,7 +26,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import ChartPresenterState
-from .llm_factory import build_llm
+from .llm_factory import build_llm, sanitize_messages
 from backend.tools.chart_tools import make_chart_tools
 from backend.database import db, COLL_AGENTS
 
@@ -135,7 +135,7 @@ def build_chart_graph():
         llm_with_tools = llm.bind_tools(tools)
 
         system_content = custom_prompt if custom_prompt else CHART_SYSTEM
-        messages = [SystemMessage(content=system_content)] + list(state.get("messages", []))
+        messages = sanitize_messages([SystemMessage(content=system_content)] + list(state.get("messages", [])))
         response = llm_with_tools.invoke(messages)
 
         is_final = not (hasattr(response, "tool_calls") and response.tool_calls)

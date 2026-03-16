@@ -51,7 +51,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import DataAnalystState
-from .llm_factory import build_llm
+from .llm_factory import build_llm, sanitize_messages
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
 from backend.tools.sql_oracle import OracleSQLTool
 from backend.database import db, COLL_AGENTS, COLL_CONNECTIONS
@@ -312,7 +312,7 @@ def planner_node(state: DataAnalystState) -> Dict[str, Any]:
     ]
 
     try:
-        response = llm.invoke(messages)
+        response = llm.invoke(sanitize_messages(messages))
         raw = response.content.strip()
         # Nettoyage des balises Markdown éventuelles
         if "```json" in raw:
@@ -495,7 +495,7 @@ def analyst_node(state: DataAnalystState) -> Dict[str, Any]:
         ),
     ]
 
-    response = llm.invoke(messages)
+    response = llm.invoke(sanitize_messages(messages))
     return {
         "analysis_output": response.content,
         "messages": [AIMessage(content=response.content)],
@@ -538,7 +538,7 @@ def synthesizer_node(state: DataAnalystState) -> Dict[str, Any]:
         ),
     ]
 
-    response = llm.invoke(messages)
+    response = llm.invoke(sanitize_messages(messages))
     return {
         "final_answer": response.content,
         "messages": [AIMessage(content=response.content)],

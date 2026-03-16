@@ -110,3 +110,30 @@ def build_llm(streaming: bool = False, temperature: Optional[float] = None) -> C
         http_client=http_client,
         http_async_client=http_async_client,
     )
+
+
+def sanitize_messages(messages: list) -> list:
+    """
+    Sanitize a list of LangChain messages before sending to an LLM.
+
+    Local LLMs (Ollama, LM Studio) and many OpenAI-compatible APIs reject
+    messages where content is None (422 error). This happens when:
+      - An AIMessage has tool_calls but no text (content=None)
+      - A ToolMessage result is None
+      - Any other message with missing content
+
+    This function replaces None content with "" and is safe to call on any
+    message list without changing behaviour for non-None content.
+    """
+    from langchain_core.messages import BaseMessage
+
+    sanitized = []
+    for msg in messages:
+        if hasattr(msg, "content") and msg.content is None:
+            # Create a copy with content="" using model_copy (Pydantic v2) or copy (v1)
+            try:
+                msg = msg.model_copy(update={"content": ""})
+            except AttributeError:
+                msg = msg.copy(update={"content": ""})
+        sanitized.append(msg)
+    return sanitized

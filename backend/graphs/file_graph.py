@@ -31,7 +31,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import FileAgentState
-from .llm_factory import build_llm
+from .llm_factory import build_llm, sanitize_messages
 from backend.tools.file_tools import make_file_tools
 from backend.database import db, COLL_AGENTS
 
@@ -91,7 +91,7 @@ def agent_node(state: FileAgentState) -> Dict[str, Any]:
     llm_with_tools = llm.bind_tools(tools)
 
     system_content = FILE_MANAGER_SYSTEM.format(custom_prompt=custom_prompt or "")
-    messages = [SystemMessage(content=system_content)] + list(state.get("messages", []))
+    messages = sanitize_messages([SystemMessage(content=system_content)] + list(state.get("messages", [])))
 
     iteration = state.get("iteration_count", 0)
     if iteration >= _MAX_ITERATIONS:

@@ -26,7 +26,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import WebScraperState
-from .llm_factory import build_llm
+from .llm_factory import build_llm, sanitize_messages
 from backend.tools.web_scraper_tools import make_web_scraper_tools
 from backend.database import db, COLL_AGENTS
 
@@ -123,7 +123,7 @@ def build_web_scraper_graph():
         if allowed_urls:
             system_content += f"\n\n## URLs autorisées pour cette session\n" + "\n".join(f"- {u}" for u in allowed_urls)
 
-        messages = [SystemMessage(content=system_content)] + list(state.get("messages", []))
+        messages = sanitize_messages([SystemMessage(content=system_content)] + list(state.get("messages", [])))
         response = llm_with_tools.invoke(messages)
 
         # Detect final answer — no more tool calls
