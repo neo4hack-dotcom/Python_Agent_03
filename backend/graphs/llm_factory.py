@@ -147,20 +147,31 @@ def _fix_none_content(msg):
     return msg
 
 
+def _is_empty_content(content) -> bool:
+    """
+    Return True if *content* must be replaced with ''.
+
+    Some LLMs return content=None, others return content=[] (empty list) when
+    they only produce tool_calls. Both are rejected by many OpenAI-compatible
+    APIs with HTTP 422.
+    """
+    return content is None or (isinstance(content, list) and len(content) == 0)
+
+
 def sanitize_messages(messages: list) -> list:
     """
     Return a list of LangChain messages safe to send to any LLM API.
 
     Local LLMs (Ollama, LM Studio) and many OpenAI-compatible APIs reject
-    messages where content is None (HTTP 422). This happens when a local
-    model returns an AIMessage with tool_calls but content=null.
+    messages where content is None or [] (HTTP 422). This happens when a local
+    model returns an AIMessage with tool_calls but content=null or content=[].
 
-    For each message whose content is None, a sanitized copy (content='')
-    is returned.  Messages with non-None content are returned as-is.
+    For each message whose content is None or [], a sanitized copy (content='')
+    is returned.  Messages with non-empty content are returned as-is.
     """
     result = []
     for msg in messages:
-        if hasattr(msg, "content") and msg.content is None:
+        if hasattr(msg, "content") and _is_empty_content(msg.content):
             result.append(_fix_none_content(msg))
         else:
             result.append(msg)
@@ -169,7 +180,7 @@ def sanitize_messages(messages: list) -> list:
 
 def sanitize_response(response):
     """
-    Return the LLM response with content='' if content is None.
+    Return the LLM response with content='' if content is None or [].
 
     Call this immediately after llm.invoke() and use the RETURN VALUE
     (not the original object) when storing into LangGraph state:
@@ -178,10 +189,10 @@ def sanitize_response(response):
         response = sanitize_response(response)   # ← use return value
         return {"messages": [response], ...}
 
-    This guarantees that the AIMessage stored in state never has content=None,
-    preventing 422 errors on the next iteration when the message is retrieved
-    from the MemorySaver checkpoint and sent back to the LLM.
+    This guarantees that the AIMessage stored in state never has content=None
+    or content=[], preventing 422 errors on the next iteration when the message
+    is retrieved from the MemorySaver checkpoint and sent back to the LLM.
     """
-    if hasattr(response, "content") and response.content is None:
+    if hasattr(response, "content") and _is_empty_content(response.content):
         return _fix_none_content(response)
     return response

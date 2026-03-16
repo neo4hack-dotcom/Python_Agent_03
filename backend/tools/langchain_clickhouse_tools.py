@@ -192,13 +192,18 @@ def make_clickhouse_tools(
             result = sql_tool.execute(sql)
             # Return JSON so tools_react_node can parse structured data
             # while the LLM can still read it as text
+            markdown_table = result.get("markdown_table", "")
+            # Cap markdown_table to prevent oversized ToolMessage payloads that
+            # cause some local LLMs to return 422 on the next LLM call.
+            if len(markdown_table) > 4000:
+                markdown_table = markdown_table[:4000] + "\n… (truncated)"
             output = {
                 "success": result.get("success", False),
                 "row_count": result.get("row_count", 0),
                 "sql_executed": result.get("sql_executed", sql),
                 "columns": result.get("columns", []),
                 "rows": result.get("rows", [])[:50],  # cap rows in tool output
-                "markdown_table": result.get("markdown_table", ""),
+                "markdown_table": markdown_table,
                 "error": result.get("error"),
                 "warning": result.get("warning"),
             }

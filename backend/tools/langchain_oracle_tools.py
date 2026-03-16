@@ -175,13 +175,16 @@ def make_oracle_tools(
             Returns JSON with: success, row_count, sql_executed,
             columns, rows, markdown_table, error (if any), warning (if truncated)."""
             result = sql_tool.execute(sql)
+            markdown_table = result.get("markdown_table", "")
+            if len(markdown_table) > 4000:
+                markdown_table = markdown_table[:4000] + "\n… (truncated)"
             output = {
                 "success": result.get("success", False),
                 "row_count": result.get("row_count", 0),
                 "sql_executed": result.get("sql_executed", sql),
                 "columns": result.get("columns", []),
                 "rows": result.get("rows", [])[:50],
-                "markdown_table": result.get("markdown_table", ""),
+                "markdown_table": markdown_table,
                 "error": result.get("error"),
                 "warning": result.get("warning"),
             }
