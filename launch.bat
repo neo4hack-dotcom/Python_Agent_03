@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 :: ============================================================
-::  Python Agent Platform — Lancement (mode production)
+::  Python Agent Platform -- Lancement (mode production)
 ::  Lance le serveur FastAPI + ouvre le navigateur
 :: ============================================================
 
@@ -16,7 +16,7 @@ set "URL=http://localhost:%PORT%"
 
 title Python Agent Platform
 
-:: ── Vérifier l'installation ───────────────────────────────────
+:: -- Verifier l'installation -----------------------------------
 if not exist "%VENV_PYTHON%" (
     echo.
     echo  [ERREUR] L'environnement virtuel est introuvable.
@@ -28,31 +28,31 @@ if not exist "%VENV_PYTHON%" (
 
 if not exist "%ROOT%\frontend\dist\index.html" (
     echo.
-    echo  [ATTENTION] Le frontend n'est pas compilé.
+    echo  [ATTENTION] Le frontend n'est pas compile.
     echo  Lancement de la compilation...
     echo.
     cd /d "%ROOT%\frontend"
     call npm run build
     if !errorlevel! neq 0 (
-        echo  [ERREUR] Build frontend échoué. Lancez install.bat.
+        echo  [ERREUR] Build frontend echoue. Lancez install.bat.
         pause
         exit /b 1
     )
     cd /d "%ROOT%"
 )
 
-:: ── Vérifier si le port est déjà occupé ─────────────────────
+:: -- Verifier si le port est deja occupe ---------------------
 netstat -ano | findstr ":%PORT% " | findstr "LISTENING" >nul 2>&1
 if !errorlevel! == 0 (
     echo.
-    echo  [INFO] Le port %PORT% est déjà utilisé.
+    echo  [INFO] Le port %PORT% est deja utilise.
     echo  Ouverture du navigateur sur %URL%...
     timeout /t 1 /nobreak >nul
     start "" "%URL%"
     exit /b 0
 )
 
-:: ── Démarrer le serveur ───────────────────────────────────────
+:: -- Demarrer le serveur ---------------------------------------
 cls
 echo.
 echo  ========================================================
@@ -68,10 +68,10 @@ echo.
 echo  ========================================================
 echo.
 
-:: Ouvrir le navigateur après 3 secondes
+:: Ouvrir le navigateur apres 3 secondes
 start "" cmd /c "timeout /t 3 /nobreak >nul && start "" %URL%"
 
-:: Lancer uvicorn (bloque dans cette fenetre — logs visibles)
+:: Lancer uvicorn (bloque dans cette fenetre -- logs visibles)
 cd /d "%ROOT%"
 "%VENV_PYTHON%" -m uvicorn backend.main:app ^
     --host 0.0.0.0 ^
@@ -79,5 +79,5 @@ cd /d "%ROOT%"
     --log-level info
 
 echo.
-echo  Le serveur s'est arrêté.
+echo  Le serveur s'est arrete.
 pause
