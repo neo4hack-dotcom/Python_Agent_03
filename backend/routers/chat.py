@@ -24,6 +24,7 @@ from backend.graphs.file_graph import build_file_graph
 from backend.graphs.powerbi_graph import build_powerbi_graph
 from backend.graphs.web_scraper_graph import build_web_scraper_graph
 from backend.graphs.chart_graph import build_chart_graph
+from backend.graphs.llm_factory import build_llm
 from backend.models.agent import AgentType
 from backend.models.chat import ChatRequest, ChatMessage, ChatSession, MessageRole
 
@@ -231,76 +232,139 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
 
 
 async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
-    graph = _get_analyst()
-    # Use a unique thread_id per request so the MemorySaver never reuses a
-    # checkpoint that may contain old content=None AIMessages (from a previous
-    # request before the sanitize fix).  Within a single request the add_messages
-    # reducer still accumulates the ReAct tool-call history correctly.
-    thread_id = f"analyst_{session_id}_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
+    """
+    ReAct loop for ClickHouse / Oracle analyst — plain Python, NO LangGraph.
+
+    Why we abandoned the graph.astream() approach completely:
+      Local LLMs return content=null for tool-calling responses. Every fix
+      that tried to patch Pydantic AIMessage objects (model_copy, object.
+      __setattr__, unique thread_id) failed on Windows because LangChain /
+      Pydantic v2 rebuilds the object from its checkpoint representation and
+      restores content=None before it reaches the next llm.invoke() call.
+
+    This implementation extracts `content` and `tool_calls` as plain Python
+    values RIGHT AFTER llm.invoke(), builds a fresh AIMessage(content=content
+    or "", tool_calls=tool_calls) from scratch, and appends it to a regular
+    Python list.  The original response object is discarded immediately.
+    No MemorySaver, no add_messages reducer, no Pydantic serialisation path.
+    """
+    from backend.graphs.analyst_graph import (
+        _build_react_tools,
+        _build_react_system_prompt,
+    )
+    from langchain_core.messages import SystemMessage, ToolMessage
+
     agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
 
-    history = _load_conversation_history(session_id)
-    initial_state = {
-        "messages": history + [HumanMessage(content=message)],
-        "user_question": message,
-        "generated_sql": None,
-        "query_result": None,
-        "retry_count": 0,
-        "max_retries": agent_cfg.get("max_retries", 3),
-        "last_error": None,
-        "final_answer": None,
-        "schema_context": None,
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "iteration_count": 0,
-    }
-
     try:
-        async for event in graph.astream(initial_state, config=config, stream_mode="values"):
-            # Only emit token for final_answer updates — not for intermediate
-            # ToolMessages (SQL results, schema) or AIMessages with tool_calls.
-            # Emitting ToolMessage content as "token" confused the frontend
-            # (user saw the raw JSON table briefly before the real answer).
-            fa = event.get("final_answer")
-            if fa:
-                yield json.dumps({"type": "thinking", "content": "⚙️ Analyse en cours…"}) + "\n"
-                await asyncio.sleep(0)
+        # ── Build tools and LLM ───────────────────────────────────────────
+        tools = _build_react_tools(agent_id)
+        llm = build_llm()
+        if tools:
+            llm = llm.bind_tools(tools)
+        tool_map = {t.name: t for t in tools}
 
-            # Emit SQL when generated
-            sql = event.get("generated_sql")
-            if sql:
-                yield json.dumps({"type": "sql", "content": sql}) + "\n"
+        system_prompt = _build_react_system_prompt(agent_id)
 
-            # Emit query result metadata
-            qr = event.get("query_result")
-            if qr and qr.get("success"):
-                yield json.dumps({
-                    "type": "query_result",
-                    "row_count": qr.get("row_count", 0),
-                    "columns": qr.get("columns", []),
-                    "rows": qr.get("rows", []),
-                    "sql": event.get("generated_sql", ""),
-                    "warning": qr.get("warning"),
-                }) + "\n"
-                await asyncio.sleep(0)
+        # ── Initial message list (plain Python, no LangGraph state) ───────
+        history = _load_conversation_history(session_id)
+        messages: list = (
+            [SystemMessage(content=system_prompt)]
+            + history
+            + [HumanMessage(content=message)]
+        )
 
-        final_state = graph.get_state(config)
-        final_answer = final_state.values.get("final_answer", "")
-        if final_answer:
-            if final_answer.strip().startswith("CLARIFICATION_NEEDED:"):
-                lines = [l.strip() for l in final_answer.strip().splitlines()]
-                question = lines[0].replace("CLARIFICATION_NEEDED:", "").strip()
-                options = []
-                for line in lines:
-                    if line.startswith("OPTIONS:"):
-                        options = [o.strip() for o in line.replace("OPTIONS:", "").split("|") if o.strip()]
-                yield json.dumps({"type": "human_validation", "content": question, "options": options}) + "\n"
-            else:
-                yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+        final_answer = ""
+        max_iterations = 10
+
+        # ── ReAct loop ────────────────────────────────────────────────────
+        for iteration in range(max_iterations):
+
+            # --- call LLM ---
+            response = llm.invoke(messages)
+
+            # Extract raw values IMMEDIATELY as plain Python — the response
+            # object may have content=None and will NOT be stored anywhere.
+            raw_content: str = response.content or ""
+            raw_tool_calls: list = list(getattr(response, "tool_calls", None) or [])
+
+            # Build a GUARANTEED-CLEAN AIMessage and append to our list.
+            # We never reference `response` again after this point.
+            ai_msg = AIMessage(content=raw_content, tool_calls=raw_tool_calls)
+            messages.append(ai_msg)
+
+            # ── No tool calls → this is the final answer ─────────────────
+            if not raw_tool_calls:
+                final_answer = raw_content
+                break
+
+            # ── Execute each requested tool ───────────────────────────────
+            for tc in raw_tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args") or {}
+                tool_call_id = tc.get("id") or f"call_{iteration}_{tool_name}"
+
+                fn = tool_map.get(tool_name)
+                if fn is None:
+                    tool_result = f"Error: unknown tool '{tool_name}'"
+                else:
+                    try:
+                        tool_result = fn.invoke(tool_args)
+                    except Exception as exc:
+                        logger.warning("Tool %s raised: %s", tool_name, exc)
+                        tool_result = f"Tool error: {exc}"
+
+                # ToolMessage content must always be a non-None string
+                tool_content = str(tool_result) if tool_result is not None else ""
+                messages.append(ToolMessage(
+                    content=tool_content,
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ))
+
+                # Emit SQL / query_result SSE events from execute_query
+                if tool_name == "execute_query":
+                    try:
+                        data = json.loads(tool_content)
+                        if data.get("success"):
+                            executed_sql = data.get("sql_executed", "")
+                            if executed_sql:
+                                yield json.dumps({"type": "sql", "content": executed_sql}) + "\n"
+                            yield json.dumps({
+                                "type": "query_result",
+                                "row_count": data.get("row_count", 0),
+                                "columns": data.get("columns", []),
+                                "rows": data.get("rows", []),
+                                "sql": executed_sql,
+                                "warning": data.get("warning"),
+                            }) + "\n"
+                            await asyncio.sleep(0)
+                    except Exception:
+                        pass
+
+        # ── Guard: max iterations exceeded without a final answer ─────────
+        if not final_answer:
+            final_answer = (
+                "❌ Impossible de générer une réponse en moins de "
+                f"{max_iterations} itérations. Reformulez votre question."
+            )
+
+        # ── Emit final SSE event ──────────────────────────────────────────
+        if final_answer.strip().startswith("CLARIFICATION_NEEDED:"):
+            lines = [l.strip() for l in final_answer.strip().splitlines()]
+            q_text = lines[0].replace("CLARIFICATION_NEEDED:", "").strip()
+            options = []
+            for line in lines:
+                if line.startswith("OPTIONS:"):
+                    options = [o.strip() for o in line.replace("OPTIONS:", "").split("|") if o.strip()]
+            yield json.dumps({"type": "human_validation", "content": q_text, "options": options}) + "\n"
+        else:
+            yield json.dumps({"type": "final", "content": final_answer}) + "\n"
+
     except Exception as e:
-        logger.error("Analyst error: %s", e)
+        logger.error("Analyst error: %s", e, exc_info=True)
         yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+
 
 
 async def _run_data_analyst(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
