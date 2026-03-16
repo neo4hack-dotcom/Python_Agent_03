@@ -10,8 +10,8 @@ export const llmApi = {
   get: () => api.get('/llm-config'),
   update: (config) => api.put('/llm-config', config),
   test: (config) => api.post('/llm-config/test', config),
-  listModels: (baseUrl, apiKey) =>
-    api.get('/llm-config/models', { params: { base_url: baseUrl, api_key: apiKey } }),
+  listModels: (baseUrl, apiKey, verifySsl = true) =>
+    api.get('/llm-config/models', { params: { base_url: baseUrl, api_key: apiKey, verify_ssl: verifySsl } }),
 }
 
 // ── Agents ───────────────────────────────────────────────────────────────────

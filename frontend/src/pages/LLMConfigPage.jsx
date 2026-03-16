@@ -21,6 +21,7 @@ export default function LLMConfigPage() {
     max_tokens: 4096,
     timeout: 120,
     streaming: true,
+    verify_ssl: true,
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -71,7 +72,7 @@ export default function LLMConfigPage() {
   const handleLoadModels = async () => {
     setLoadingModels(true)
     try {
-      const r = await llmApi.listModels(config.base_url, config.api_key)
+      const r = await llmApi.listModels(config.base_url, config.api_key, config.verify_ssl)
       if (r.data.success) {
         setModels(r.data.models)
         show(`${r.data.models.length} modèle(s) trouvé(s)`, 'success')
@@ -254,6 +255,31 @@ export default function LLMConfigPage() {
                     Activer le streaming des tokens
                   </label>
                 </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Vérification SSL</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    id="verify_ssl"
+                    checked={config.verify_ssl !== false}
+                    onChange={(e) => setConfig((c) => ({ ...c, verify_ssl: e.target.checked }))}
+                    style={{ width: 16, height: 16, accentColor: 'var(--accent)' }}
+                  />
+                  <label htmlFor="verify_ssl" style={{ cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                    Vérifier le certificat SSL
+                  </label>
+                </div>
+                {config.verify_ssl === false && (
+                  <div style={{
+                    marginTop: 6, padding: '6px 10px', borderRadius: 6,
+                    background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
+                    fontSize: 12, color: '#f59e0b',
+                  }}>
+                    ⚠️ Vérification SSL désactivée — à utiliser uniquement avec des serveurs locaux de confiance (certificat auto-signé, LM Studio HTTPS, proxy interne).
+                  </div>
+                )}
               </div>
             </div>
           </div>

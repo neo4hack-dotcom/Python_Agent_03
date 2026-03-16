@@ -19,6 +19,7 @@ class LLMConfig(BaseModel):
     max_tokens: int = Field(default=4096, ge=64, le=32768)
     timeout: int = Field(default=120, ge=10, le=600, description="Request timeout in seconds")
     streaming: bool = Field(default=True)
+    verify_ssl: bool = Field(default=True, description="Verify SSL certificate (disable for self-signed certs)")
 
     class Config:
         json_schema_extra = {
@@ -31,5 +32,6 @@ class LLMConfig(BaseModel):
                 "max_tokens": 4096,
                 "timeout": 120,
                 "streaming": True,
+                "verify_ssl": True,
             }
         }

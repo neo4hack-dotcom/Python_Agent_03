@@ -21,6 +21,7 @@ la config la plus récente sans avoir besoin de redémarrer le serveur.
 """
 import logging
 from typing import Optional
+import httpx
 from langchain_openai import ChatOpenAI
 from backend.database import db, COLL_LLM_CONFIG
 from backend.models.llm_config import LLMConfig
@@ -91,6 +92,13 @@ def build_llm(streaming: bool = False, temperature: Optional[float] = None) -> C
             yield chunk.content
     """
     cfg = get_llm_config()
+
+    # Build a custom httpx client so we can control SSL verification.
+    # verify=False is required for self-signed certificates (LM Studio HTTPS,
+    # corporate proxies, local PKI not trusted by the system store, etc.)
+    http_client = httpx.Client(verify=cfg.verify_ssl)
+    http_async_client = httpx.AsyncClient(verify=cfg.verify_ssl)
+
     return ChatOpenAI(
         model=cfg.model,                                          # ex: "llama3", "mistral", "gpt-4o"
         base_url=cfg.base_url,                                    # ex: "http://localhost:11434/v1"
@@ -99,4 +107,6 @@ def build_llm(streaming: bool = False, temperature: Optional[float] = None) -> C
         max_tokens=cfg.max_tokens,                                # limite la longueur des réponses
         timeout=cfg.timeout,                                      # timeout HTTP en secondes
         streaming=streaming and cfg.streaming,                    # AND logique : les deux doivent être True
+        http_client=http_client,
+        http_async_client=http_async_client,
     )

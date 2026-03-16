@@ -35,7 +35,7 @@ async def test_llm_connection(config: LLMConfig):
         base = base + "/v1"
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, verify=config.verify_ssl) as client:
             resp = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {config.api_key}"},
@@ -50,15 +50,17 @@ async def test_llm_connection(config: LLMConfig):
             return {"success": False, "status_code": resp.status_code, "detail": resp.text[:500]}
     except httpx.ConnectError as e:
         return {"success": False, "error": f"Connexion refusée — vérifiez qu'Ollama/LM Studio est démarré. ({e})"}
+    except httpx.ConnectTimeout as e:
+        return {"success": False, "error": f"Timeout — le serveur ne répond pas dans le délai imparti. ({e})"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 
 @router.get("/models")
-async def list_available_models(base_url: str, api_key: str = "ollama"):
+async def list_available_models(base_url: str, api_key: str = "ollama", verify_ssl: bool = True):
     """Fetch available models from the configured endpoint."""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, verify=verify_ssl) as client:
             resp = await client.get(
                 f"{base_url.rstrip('/')}/models",
                 headers={"Authorization": f"Bearer {api_key}"},
