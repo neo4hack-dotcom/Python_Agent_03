@@ -174,30 +174,14 @@ def sanitize_response(response):
     Call this immediately after llm.invoke() and use the RETURN VALUE
     (not the original object) when storing into LangGraph state:
 
-        response = sanitize_response(llm.invoke(messages))
+        response = llm.invoke(messages)
+        response = sanitize_response(response)   # ← use return value
         return {"messages": [response], ...}
 
     This guarantees that the AIMessage stored in state never has content=None,
     preventing 422 errors on the next iteration when the message is retrieved
     from the MemorySaver checkpoint and sent back to the LLM.
-
-    Defence in depth:
-      1. _fix_none_content() tries model_copy → copy → object.__setattr__
-      2. After the call, a final object.__setattr__ is applied to the returned
-         object as a last resort (covers the case where model_copy returned a
-         new object but the field was re-set to None by a Pydantic validator).
     """
-    if not (hasattr(response, "content") and response.content is None):
-        return response
-
-    result = _fix_none_content(response)
-
-    # Final guarantee — if content is still None after _fix_none_content,
-    # force it via object.__setattr__ on whatever object was returned.
-    if getattr(result, "content", None) is None:
-        try:
-            object.__setattr__(result, "content", "")
-        except Exception:
-            pass
-
-    return result
+    if hasattr(response, "content") and response.content is None:
+        return _fix_none_content(response)
+    return response

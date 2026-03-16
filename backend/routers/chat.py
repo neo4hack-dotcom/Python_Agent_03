@@ -232,12 +232,7 @@ async def _run_orchestrator(agent_id: str, session_id: str, message: str) -> Asy
 
 async def _run_analyst(agent_id: str, session_id: str, message: str) -> AsyncGenerator[str, None]:
     graph = _get_analyst()
-    # Use a unique thread_id per request so the MemorySaver never reuses a
-    # checkpoint that may contain old content=None AIMessages (from a previous
-    # request before the sanitize fix).  Within a single request the add_messages
-    # reducer still accumulates the ReAct tool-call history correctly.
-    thread_id = f"analyst_{session_id}_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": session_id}}
     agent_cfg = db.get(COLL_AGENTS, agent_id) or {}
 
     history = _load_conversation_history(session_id)

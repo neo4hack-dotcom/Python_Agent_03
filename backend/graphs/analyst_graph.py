@@ -411,15 +411,11 @@ def agent_react_node(state: AnalystState) -> Dict[str, Any]:
 
     # Appel LLM
     response = llm.invoke(full_messages)
-    # Layer 1 — model_copy / object.__setattr__ (new object or in-place)
+    # Sanitize response — content=None from a tool-calling LLM response would
+    # re-enter state and cause 422 on the next iteration. Use the return value:
+    # sanitize_response may create a new object via model_copy instead of
+    # modifying in-place, so the assignment is mandatory.
     response = sanitize_response(response)
-    # Layer 2 — explicit last-resort guard (covers edge cases where sanitize
-    # silently failed and the same object with content=None was returned)
-    if getattr(response, "content", None) is None:
-        try:
-            object.__setattr__(response, "content", "")
-        except Exception:
-            pass
 
     iteration = state.get("iteration_count", 0) + 1
     updates: Dict[str, Any] = {
@@ -552,8 +548,8 @@ def analyst_node(state: AnalystState) -> Dict[str, Any]:
             )
         )
     full_messages = sanitize_messages([SystemMessage(content=system_prompt)] + history)
-    response = sanitize_response(llm.invoke(full_messages))
-    sql = (response.content or "").strip()
+    response = llm.invoke(full_messages)
+    sql = response.content.strip()
     # Nettoyage des balises Markdown
     if "```sql" in sql:
         sql = sql.split("```sql")[1].split("```")[0].strip()
@@ -633,11 +629,10 @@ def synthesizer_node(state: AnalystState) -> Dict[str, Any]:
             + (f"⚠️ Warning: {result.get('warning')}" if result.get("warning") else "")
         ),
     ]
-    response = sanitize_response(llm.invoke(sanitize_messages(messages)))
-    answer = response.content or ""
+    response = llm.invoke(sanitize_messages(messages))
     return {
-        "final_answer": answer,
-        "messages": [AIMessage(content=answer)],
+        "final_answer": response.content,
+        "messages": [AIMessage(content=response.content)],
     }
 
 
