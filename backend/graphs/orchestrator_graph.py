@@ -1502,7 +1502,7 @@ def worker_node(state: OrchestratorState) -> Dict[str, Any]:
             "agent_type": agent_type,
             "agent_id": state.get("agent_id"),
             "agent_name": "Orchestrateur",
-            "result": response.content,
+            "result": response.content or "",
             "success": True,
         }
         updated_results = state.get("worker_results", []) + [result_entry]
@@ -1568,7 +1568,7 @@ def corrector_node(state: OrchestratorState) -> Dict[str, Any]:
     # Crée une copie de la tâche avec la description corrigée
     # (les autres champs comme agent_type, agent_id, depends_on restent identiques)
     corrected_task = dict(task)
-    corrected_task["description"] = response.content
+    corrected_task["description"] = response.content or ""
 
     return {
         "current_task": corrected_task,
@@ -1626,8 +1626,8 @@ def synthesizer_node(state: OrchestratorState) -> Dict[str, Any]:
             break
 
     return {
-        "final_answer": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "final_answer": response.content or "",
+        "messages": [AIMessage(content=response.content or "")],
         "report_id": report_id,
     }
 

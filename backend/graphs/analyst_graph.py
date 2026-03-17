@@ -548,7 +548,7 @@ def analyst_node(state: AnalystState) -> Dict[str, Any]:
             )
         )
     full_messages = sanitize_messages([SystemMessage(content=system_prompt)] + history)
-    response = llm.invoke(full_messages)
+    response = sanitize_response(llm.invoke(full_messages))
     sql = response.content.strip()
     # Nettoyage des balises Markdown
     if "```sql" in sql:
@@ -629,10 +629,10 @@ def synthesizer_node(state: AnalystState) -> Dict[str, Any]:
             + (f"⚠️ Warning: {result.get('warning')}" if result.get("warning") else "")
         ),
     ]
-    response = llm.invoke(sanitize_messages(messages))
+    response = sanitize_response(llm.invoke(sanitize_messages(messages)))
     return {
-        "final_answer": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "final_answer": response.content or "",
+        "messages": [AIMessage(content=response.content or "")],
     }
 
 

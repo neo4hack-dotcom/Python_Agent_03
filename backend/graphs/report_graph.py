@@ -36,7 +36,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import ReportState
-from .llm_factory import build_llm
+from .llm_factory import build_llm, sanitize_messages, sanitize_response
 
 logger = logging.getLogger(__name__)
 
@@ -159,10 +159,10 @@ def report_writer_node(state: ReportState) -> Dict[str, Any]:
 Génère maintenant le rapport d'analyse complet en Markdown, en suivant strictement la structure demandée.
 """
 
-    response = llm.invoke([
+    response = sanitize_response(llm.invoke(sanitize_messages([
         SystemMessage(content=REPORT_WRITER_SYSTEM),
         HumanMessage(content=human_content),
-    ])
+    ])))
 
     report_md = response.content.strip()
     return {

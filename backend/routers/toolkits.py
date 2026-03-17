@@ -118,7 +118,7 @@ def generate_toolkit(payload: ToolkitGenerateRequest):
 
     Retourne un JSON prêt à être affiché dans le formulaire ToolkitModal.
     """
-    from backend.graphs.llm_factory import build_llm
+    from backend.graphs.llm_factory import build_llm, sanitize_messages, sanitize_response
     from backend.tools.langchain_clickhouse_tools import CLICKHOUSE_TOOL_DEFINITIONS
     from backend.tools.langchain_oracle_tools import ORACLE_TOOL_DEFINITIONS
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -199,11 +199,11 @@ Tu dois générer une configuration de toolkit JSON pour personnaliser les outil
 
     try:
         llm = build_llm(temperature=0.3)
-        response = llm.invoke([
+        response = sanitize_response(llm.invoke(sanitize_messages([
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"Cas d'usage : {payload.description}"),
-        ])
-        generated = _extract_json(response.content)
+        ])))
+        generated = _extract_json(response.content or "")
 
         # Validation / normalisation
         valid_names = {t["name"] for t in tool_defs}
