@@ -19,13 +19,13 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import Annotated, TypedDict
 
 from backend.database import db, COLL_AGENTS, COLL_CONNECTIONS
-from backend.graphs.llm_factory import build_llm
+from backend.graphs.llm_factory import build_llm, sanitize_messages, sanitize_response, sanitize_messages, sanitize_response
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
 from backend.tools.sql_oracle import OracleSQLTool
 
@@ -303,10 +303,10 @@ def llm_doc_node(state: DataDictionaryState) -> Dict:
         # Build LLM prompt
         user_msg = _build_user_prompt(table, schema_cols, sample, language)
         try:
-            response = llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ])
+            response = sanitize_response(llm.invoke(sanitize_messages([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_msg),
+            ])))
             raw_text = response.content if hasattr(response, "content") else str(response)
             parsed = _extract_json(raw_text)
             if parsed:

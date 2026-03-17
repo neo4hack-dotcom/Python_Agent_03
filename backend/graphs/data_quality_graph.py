@@ -28,7 +28,7 @@ from typing_extensions import Annotated, TypedDict
 from langgraph.graph.message import add_messages
 
 from backend.database import db, COLL_AGENTS, COLL_CONNECTIONS
-from backend.graphs.llm_factory import build_llm
+from backend.graphs.llm_factory import build_llm, sanitize_messages, sanitize_response
 from backend.tools.sql_clickhouse import ClickHouseSQLTool
 from backend.tools.sql_oracle import OracleSQLTool
 
@@ -592,7 +592,7 @@ Analyse la qualité des données et produis un rapport structuré selon les inst
             SystemMessage(content=DQ_SYSTEM_PROMPT),
             HumanMessage(content=user_msg),
         ]
-        response = llm.invoke(messages)
+        response = sanitize_response(llm.invoke(sanitize_messages(messages)))
         analysis = response.content if hasattr(response, "content") else str(response)
 
         return {
